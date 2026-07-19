@@ -79,6 +79,25 @@ NovaSRE enforces a strictly balanced **`2 Auto-Remediation vs. 2 Manual HITL Rem
 | **3** | `gke-pod-crash` | `redis-cart` | Deletes active pods and injects a memory lock causing shopping cart database connection timeouts. | **Playbook 3 (`gke-pod-restart.md`)**: Execute a clean pod rolling restart (`kubectl rollout restart deployment/redis-cart`) to clear stuck pool locks. | **Tier 2 (Manual HITL Approval)**:<br>Requires operator confirmation via UI (`[ ✅ Approve Pod Restart ]`). |
 | **4** | `gke-payment-latency` | `paymentservice` | Throttles capacity to `1 replica` under peak synthetic checkout surges, causing transaction timeouts (`>2000ms`). | **Playbook 4 (`gke-horizontal-upsize.md`)**: Scale `paymentservice` up to **`3 replicas`** (`kubectl scale deployment paymentservice --replicas=3`) to absorb transaction spikes. | **Tier 2 (Manual HITL Approval)**:<br>Requires operator confirmation via UI (`[ ✅ Approve Horizontal Upsize ]`). |
 
+### 🛡️ The 3-Tier Resolution Hierarchy & Novel Outage Fallback
+
+To balance execution velocity against production safety—especially when encountering unforeseen zero-day anomalies—NovaSRE orchestrates investigation and self-healing across three autonomous governance tiers:
+
+1. **Tier 1: Autonomous Auto-Remediation (High Confidence / Low Risk)**  
+   * **When it activates**: Root cause analysis precisely correlates with an established GCS Standard Operating Procedure (`SKILL.md`) or a verified bad rollout record in the BigQuery deployment ledger (e.g., stateless replica drops or broken container releases).
+   * **Execution Flow**: `rca-telemetry-expert` loads the playbook and instantly delegates across Agent-to-Agent (`A2A`) protocol to `remediation-executor`. Service availability is restored in seconds with zero operator intervention required.
+
+2. **Tier 2: Gated Human-in-the-Loop Remediation (High Confidence / High Impact)**  
+   * **When it activates**: The diagnosed failure maps to an established playbook, but executing the cure involves stateful disruption, potential cache resets, or financial/resource quota scaling (e.g., restarting database connections or multiplying pod counts under surge load).
+   * **Execution Flow**: The diagnostic engine prepares a detailed **Executive Resolution Brief** in the Control Room with a mandatory security checkpoint. Execution halts until an SRE reviews the evidence and clicks **`✅ Approve & Execute Action`**.
+
+3. **Tier 3: Autonomous LLM Fallback (Zero-Day & Unscripted Anomalies)**  
+   * **When it activates**: An infrastructure issue is detected that **does not match any pre-configured GCS markdown playbook or BigQuery release event** (e.g., novel network latency, strange OOM memory leaks, or unscripted configuration drift).
+   * **Execution Flow**: Instead of throwing an error or failing, the platform falls back to **Tier 3 (LLM Fallback)**:
+     * Leveraging its foundational Gemini reasoning capabilities, `rca-telemetry-expert` acts as an autonomous tier-3 investigator.
+     * It progressively interrogates container error logs (`LOGGING_MCP_SERVER`), inspects metric deviations (`MONITORING_MCP_SERVER`), and queries live Kubernetes pod manifests (`GKE_MCP_SERVER`).
+     * It dynamically formulates an unscripted, highly contextual mitigation strategy and presents its diagnostic hypothesis directly to the operator in the control room chat for HITL review and execution.
+
 ---
 
 ## 📦 3. BigQuery Deployment Ledger Correlation (`Pivot 5`)
@@ -97,20 +116,7 @@ When an anomaly occurs (`e.g. cartservice entering CrashLoopBackOff`), NovaSRE d
 
 You can deploy NovaSRE to either a **new Google Cloud project** or an **existing project** using our modular Terraform suite (`terraform/`).
 
-### ⏱️ Estimated Deployment Time Benchmarks
-Based on live production benchmarks, our modular architecture parallelizes provisioning across components:
-
-| Component / Phase | Execution Mode | Estimated Duration | Description |
-| :--- | :--- | :--- | :--- |
-| **GCP Foundation & IAM** | Sequential | `~45s` | Enable 14 Google Cloud APIs & create least-privilege service accounts. |
-| **VPC & Private GKE Autopilot** | Parallel with Agents | `~5m 30s` | Provision `sre-agent-vpc` and internal-only `online-boutique` cluster. |
-| **BigQuery & GCS Playbooks** | Parallel with GKE | `~15s` | Provision `sre_releases` dataset and sync 4 markdown playbooks to GCS. |
-| **3x Vertex AI Reasoning Engines** | Parallel with GKE | `~5m 55s` | Package, build, and deploy `remediation-executor`, `outage-simulator`, and `rca-telemetry-expert` to serverless containers. |
-| **Cloud Run Control Room UI** | Sequential (After Agents) | `~2m 45s` | Build and deploy `novasre-control-room` Streamlit web portal. |
-| **GKE Microservice Pod Startup** | Final Verification | `~1m 30s` | Apply `microservices-demo` manifests and wait for `1/1 Running`. |
-
-* **Total Time (Path A - New Project Full Stack)**: **`~10 to 12 minutes total`** *(GKE cluster provisioning and Vertex AI agent builds run concurrently).*
-* **Total Time (Path B - Existing Project Agents + UI Only)**: **`~6 to 8 minutes total`** *(Only container builds and Cloud Run deployment).*
+* **⏱️ Estimated Deployment Time:** **`~10 to 12 minutes`** for a full stack deployment to a new project, or **`~6 to 8 minutes`** when deploying agents and the control room UI to an existing project.
 
 ### Prerequisites
 * Google Cloud CLI (`gcloud`) installed and authenticated (`gcloud auth login`).
@@ -197,7 +203,11 @@ Open the HTTPS URL in your browser and run through the live demo workflows:
 3. **Trigger Autonomous Investigation & HITL Approval**: 
    * Click **`🔍 Trigger Autonomous Investigation`** (or type a query directly into the `💬 NovaSRE AI Companion` chat stream).
    * **If Tier 1 (Auto-Recovery)**: The agent heals the cluster immediately and confirms recovery.
-   * **If Tier 2 (Manual HITL)**: The UI dynamically renders the **`⚡ Proposed Recovery Action`** confirmation box. Click **`✅ Approve & Execute Action`**. The Remediation Worker executes the fix over A2A, confirms pod readiness (`Ready: 3/3`), sets the status back to `HEALTHY 🟢`, and compiles the **Markdown Post-M### Option B: Test via the Terminal (Direct cURL & REST API Verification)
+   * **If Tier 2 (Manual HITL)**: The UI dynamically renders the **`⚡ Proposed Recovery Action`** confirmation box. Click **`✅ Approve & Execute Action`**. The Remediation Worker executes the fix over A2A, confirms pod readiness (`Ready: 3/3`), sets the status back to `HEALTHY 🟢`, and compiles the **Markdown Post-Mortem Report** directly in the UI.
+
+---
+
+### Option B: Test via the Terminal (Direct cURL & REST API Verification)
 
 You can run an end-to-end verification directly from your terminal (`bash`) by querying the serverless Vertex AI Reasoning Engine REST endpoints (`:streamQuery`) using `curl` and your Google Cloud OAuth token. This simulates a complete **Tier 1 Scale Outage (`gke-scale-outage`)** and verifies autonomous self-healing via Agent-to-Agent (`A2A`) delegation.
 
@@ -286,6 +296,20 @@ kubectl get deployment frontend -n default
 NAME       READY   UP-TO-DATE   AVAILABLE   AGE
 frontend   1/1     1            1           11h
 ```
+
+---
+
+## 🛠️ 6. Extensibility: How to Expand the Platform for New Issues
+
+Because NovaSRE is built upon **Modular Markdown Skills (`SKILL.md`)** and the **Model Context Protocol (MCP)**, expanding the platform to simulate, triage, and remediate brand-new failure scenarios is completely decoupled from core agent code. You do not need to retrain models or modify core Python orchestration logic.
+
+To add a new autonomous capability, complete three lightweight steps:
+
+1. **Author a Chaos Simulation Skill**: Create a new folder under `app/skills/simulations/<your-new-scenario>/SKILL.md`. Document the exact failure injection routine in readable GitHub Flavored Markdown (e.g., injecting CPU saturation, editing resource limits, or introducing network loss via `kubectl`).
+2. **Author a Remediation Playbook**: Create the corresponding diagnostic SOP under `app/skills/playbooks/<your-new-scenario>/SKILL.md`. Document the target symptoms, causal telemetry indicators, and exact recovery commands (`kubectl`, `gcloud`, etc.). When you run `terraform apply`, this playbook is automatically seeded into your central Google Cloud Storage repository (`GCS_MCP_SERVER`).
+3. **Register in the Control Room & Assign Governance Tier**: Add your new scenario ID to the dropdown selector in `ui/streamlit_app.py` and assign its operational governance policy (Tier 1 for immediate Auto-Remediation or Tier 2 for gated HITL confirmation).
+
+Once updated, the Vertex AI Reasoning Engines automatically discover, parse, and orchestrate your new skills on demand via their conversational MCP server attachments.
 
 ---
 
