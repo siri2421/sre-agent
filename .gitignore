@@ -1,0 +1,40 @@
+# 1. Secrets, Environment & Credentials
+.env
+.env.*
+*.key
+*.pem
+application_default_credentials.json
+
+# 2. Python & Build Artifacts
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+*.pkl
+dependencies.tar.gz
+
+# 3. Scratch, Temp & Local Bundles
+scratch/
+temp/
+*.zip
+*.tar.gz
+.gemini/
+
+# 4. Terraform Runtime State & Caches
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+*_override.tf
+.terraform.lock.hcl
+
+# 5. IDE & OS Noise
+.DS_Store
+.vscode/
+.idea/
+*.log
