@@ -15,11 +15,12 @@ The NovaSRE ecosystem consists of three specialized Reasoning Engine agents, a c
 ```mermaid
 graph TD
     subgraph SRE Control Room [UI: novasre-control-room on Cloud Run]
-        UI[Streamlit Web Portal<br/>HITL Approval Cards & Live Chat]
+        UI[Streamlit Web Portal / Supervisor<br/>HITL Approval & Routing]
     end
 
     subgraph Vertex AI Reasoning Engines [Google Cloud Vertex AI Serverless Agents]
         InvAgent[Investigator Agent<br/>rca-telemetry-expert]
+        NetAgent[Network Expert<br/>network-triage-expert]
         RemAgent[Remediation Agent<br/>remediation-executor]
         SimAgent[Chaos Engine<br/>outage-simulator]
     end
@@ -38,18 +39,25 @@ graph TD
     end
 
     %% UI & Agent Interactions
-    UI <-->|ReasoningEngine.stream_query| InvAgent
+    UI <-->|1a. App/Workload Alert Query| InvAgent
+    UI <-->|1b. Network Alert Query| NetAgent
     UI -->|Trigger Outage Scenario| SimAgent
     UI -->|Human Approval Action| RemAgent
 
-    %% A2A Gateway
-    InvAgent -->|Secure Keyless A2A Delegation| RemAgent
+    %% A2A Escalation and Delegation
+    InvAgent -->|2a. A2A Network Escalation| NetAgent
+    InvAgent -->|2b. A2A Healing Request| RemAgent
+    NetAgent -->|2c. A2A Healing Request| RemAgent
 
     %% OneMCP Connections
-    InvAgent -->|1. Triage Observability| LOG_MCP
-    InvAgent -->|2. Inspect Kubernetes State| GKE_MCP
-    InvAgent -->|3. Correlate Deployments| BQ_MCP
-    InvAgent -->|4. Load Modular Playbooks| GCS_MCP
+    InvAgent -->|Triage Observability| LOG_MCP
+    InvAgent -->|Inspect Kubernetes State| GKE_MCP
+    InvAgent -->|Correlate Deployments| BQ_MCP
+    InvAgent -->|Load Modular Playbooks| GCS_MCP
+    
+    NetAgent -->|Triage Network State| GKE_MCP
+    NetAgent -->|Inspect GCP Flow Logs/NAT| LOG_MCP
+    NetAgent -->|Load Network Playbooks| GCS_MCP
     
     SimAgent -->|Inject GKE Outage| GKE_MCP
     RemAgent -->|Execute kubectl / gcloud Healing| GKE_MCP
@@ -62,9 +70,12 @@ graph TD
 
 ### Core Components Summary
 1. **`rca-telemetry-expert` (The Diagnostician)**: Operates with **read-only privileges**. Performs progressive baseline triage across Cloud Logging and Monitoring (`LOGGING_MCP_SERVER`, `MONITORING_MCP_SERVER`), inspects GKE workload health (`GKE_MCP_SERVER`), queries the BigQuery Deployment Ledger (`BQ_MCP_SERVER`), and dynamically loads modular markdown playbooks from GCS (`GCS_MCP_SERVER`).
-2. **`remediation-executor` (The Remediation Worker)**: The **only** identity endowed with GKE write access (`container.developer`). Executes pre-approved `kubectl` and `gcloud` healing commands when authorized by the Diagnostician or human operator.
-3. **`outage-simulator` (The Chaos Engine)**: An autonomous Chaos Engineering agent that dynamically reads `app/skills/simulations/` playbooks and injects controlled outages into the `online-boutique` GKE cluster.
-4. **`novasre-control-room` (The Incident Operations Center UI)**: A minimalist Streamlit web application running on Cloud Run (`$0` idle cost). Provides operators with the `💬 NovaSRE AI Companion`, real-time BigQuery ledger views, and high-visibility **Human-in-the-Loop (`HITL`) Approval Cards** (`[ ✅ Approve & Execute ]`).
+2. **`network_triage_expert` (The Network Triage Expert)**: Autonomous network specialist agent. Triage VPC Flow Logs, Firewall DENY events, Cloud NAT port drops, Connectivity Tests, GKE eBPF/Dataplane V2 overlay networking, CoreDNS, Gateway API, Cloud Armor WAF, and Global External Application Load Balancers using specialized skills (`google-cloud-networking-observability`, `gke-networking`, `google-cloud-global-frontend-configuration`).
+3. **`sre_supervisor` (Conditional Routing & Safety Gate)**: Inspects incoming alerts to conditionally route network-domain anomalies to `network_triage_expert` and application/workload anomalies to `rca_telemetry_expert`.
+4. **`remediation-executor` (The Remediation Worker)**: The **only** identity endowed with GKE write access (`container.developer`). Executes pre-approved `kubectl` and `gcloud` healing commands when authorized by the Diagnostician or human operator.
+5. **`outage-simulator` (The Chaos Engine)**: An autonomous Chaos Engineering agent that dynamically reads `app/skills/simulations/` playbooks and injects controlled outages into the `online-boutique` GKE cluster.
+6. **`novasre-control-room` (The Incident Operations Center UI)**: A minimalist Streamlit web application running on Cloud Run (`$0` idle cost). Provides operators with the `💬 NovaSRE AI Companion`, real-time BigQuery ledger views, and high-visibility **Human-in-the-Loop (`HITL`) Approval Cards** (`[ ✅ Approve & Execute ]`).
+
 
 ---
 
@@ -100,7 +111,22 @@ To balance execution velocity against production safety—especially when encoun
 
 ---
 
-## 📦 3. BigQuery Deployment Ledger Correlation (`Pivot 5`)
+## 🌐 3. Dynamic Network Triage & A2A Escalation Flow
+
+To minimize diagnostic noise, NovaSRE separates application workload issues from complex cloud routing failures using a dual-path routing and A2A escalation mechanism:
+
+1. **Direct Path (Alert Routing by Supervisor)**
+   * **Trigger**: The SRE Supervisor parses incoming alerts for network signatures (VPC, NAT, DNS, Firewall, Ingress/Egress drops, timeouts).
+   * **Flow**: The alert is directly delegated to the **`network_triage_expert`** to investigate VPC flow logs, Dataplane V2 eBPF drops, and CoreDNS health.
+
+2. **Indirect Path (Dynamic A2A Escalation by Investigator)**
+   * **Trigger**: An alert arrives as a generic application anomaly, so the supervisor delegates it to the **`rca-telemetry-expert`** (Investigator).
+   * **Flow**: The investigator checks GKE workload health and container logs. If it confirms the pods are healthy (0 crashes) but experiencing connection refusals/timeouts (`dial tcp: i/o timeout`, `Connection refused`, `502 Bad Gateway`), it dynamically triggers the **Network Escalation Protocol** by calling the **`network_triage_expert`** remote agent over an Agent-to-Agent (A2A) session.
+   * **Remediation**: The `network-triage-expert` identifies the network issue (such as a bad Service selector or restrictive NetworkPolicy), loads the relevant playbook (e.g., `gke-service-routing-recovery`), and calls the A2A `remediation-executor` to restore connectivity.
+
+---
+
+## 📦 4. BigQuery Deployment Ledger Correlation (`Pivot 5`)
 
 When an anomaly occurs (`e.g. cartservice entering CrashLoopBackOff`), NovaSRE does not guess the fix. It performs **Causal Deployment Correlation**:
 1. Queries the seeded BigQuery database using OneMCP (`BQ_MCP_SERVER`):
@@ -112,7 +138,7 @@ When an anomaly occurs (`e.g. cartservice entering CrashLoopBackOff`), NovaSRE d
 
 ---
 
-## 🚀 4. Comprehensive Deployment Guide
+## 🚀 5. Comprehensive Deployment Guide
 
 You can deploy NovaSRE to either a **new Google Cloud project** or an **existing project** using our modular Terraform suite (`terraform/`).
 
@@ -206,7 +232,7 @@ gcloud run services update novasre-control-room \
 
 ---
 
-## 🧪 5. How to Simulate Failures & Test
+## 🧪 6. How to Simulate Failures & Test
 
 You can verify and demonstrate the complete **NovaSRE** self-healing architecture either through the interactive Web Portal or directly via the terminal using the Vertex AI Python SDK.
 
@@ -325,7 +351,7 @@ frontend   1/1     1            1           11h
 
 ---
 
-## 🛠️ 6. Extensibility: How to Expand the Platform for New Issues
+## 🛠️ 7. Extensibility: How to Expand the Platform for New Issues
 
 Because NovaSRE is built upon **Modular Markdown Skills (`SKILL.md`)** and the **Model Context Protocol (MCP)**, expanding the platform to simulate, triage, and remediate brand-new failure scenarios is completely decoupled from core agent code. You do not need to retrain models or modify core Python orchestration logic.
 

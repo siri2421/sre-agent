@@ -36,7 +36,7 @@ resource "terraform_data" "deploy_reasoning_engines" {
   provisioner "local-exec" {
     command = <<-EOT
       set -e
-      export PATH=$PATH:/google/google-cloud-sdk/bin:/usr/bin:/bin
+      export PATH=$HOME/google-cloud-sdk/bin:$HOME/.local/bin:$PATH:/google/google-cloud-sdk/bin:/usr/bin:/bin
       PYTHON_CMD=$(command -v python3 || find / -name python3 -type f 2>/dev/null | head -n 1)
       if [ -f "${abspath(path.root)}/../.venv/bin/python3" ]; then
         PYTHON_CMD="${abspath(path.root)}/../.venv/bin/python3"
@@ -68,7 +68,7 @@ resource "terraform_data" "build_portal_image" {
   provisioner "local-exec" {
     command = <<-EOT
       set -e
-      export PATH=$PATH:/google/google-cloud-sdk/bin:/usr/lib/google-cloud-sdk/bin:/opt/google-cloud-sdk/bin:/usr/local/google-cloud-sdk/bin:/root/google-cloud-sdk/bin:/usr/local/bin:/usr/bin:/bin
+      export PATH=$HOME/google-cloud-sdk/bin:$HOME/.local/bin:$PATH:/google/google-cloud-sdk/bin:/usr/lib/google-cloud-sdk/bin:/opt/google-cloud-sdk/bin:/usr/local/google-cloud-sdk/bin:/root/google-cloud-sdk/bin:/usr/local/bin:/usr/bin:/bin
       GCLOUD_CMD=$(command -v gcloud || find / -name gcloud -type f 2>/dev/null | head -n 1)
       if [ -z "$GCLOUD_CMD" ]; then echo "❌ gcloud CLI required to build container image."; exit 1; fi
 

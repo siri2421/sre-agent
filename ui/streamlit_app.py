@@ -260,6 +260,12 @@ with st.sidebar:
                         sim_options[p.name] = "🟡 gke-pod-crash (redis-cart Lock & Timeout | Tier 2 HITL)"
                     elif p.name == "gke-payment-latency":
                         sim_options[p.name] = "🟡 gke-payment-latency (paymentservice Bottleneck | Tier 2 HITL)"
+                    elif p.name == "gke-network-firewall-block":
+                        sim_options[p.name] = "🌐 gke-network-firewall-block (NetworkPolicy Traffic Isolation | Tier 2 HITL)"
+                    elif p.name == "gke-dns-outage":
+                        sim_options[p.name] = "🌐 gke-dns-outage (CoreDNS Resolution Timeout | Tier 1 Auto)"
+                    elif p.name == "gcp-nat-port-drop":
+                        sim_options[p.name] = "🌐 gcp-nat-port-drop (Cloud NAT Egress Port Exhaustion | Tier 2 HITL)"
                     else:
                         sim_options[p.name] = f"🟡 {p.name} Simulation"
         if not sim_options:
@@ -319,6 +325,12 @@ with st.sidebar:
                     st.session_state.active_alert = "CRITICAL ALERT: redis-cart connection timeout exceptions exceeding threshold across shopping carts. Pod terminated."
                 elif selected_sim == "gke-payment-latency":
                     st.session_state.active_alert = "WARNING ALERT: paymentservice p99 transaction latency exceeding 2000ms. High CPU saturation and checkout timeouts."
+                elif selected_sim == "gke-network-firewall-block":
+                    st.session_state.active_alert = "CRITICAL ALERT: checkoutservice pod network isolation reported. Restrictive NetworkPolicy blocking ingress/egress packets."
+                elif selected_sim == "gke-dns-outage":
+                    st.session_state.active_alert = "CRITICAL ALERT: GKE CoreDNS deployment in namespace kube-system scaled to 0. Internal domain resolution timeouts across cluster.local."
+                elif selected_sim == "gcp-nat-port-drop":
+                    st.session_state.active_alert = "WARNING ALERT: Cloud NAT gateway nat-gateway-us-central1 SNAT port allocation exhausted. Outbound paymentservice packets dropped."
                 else:
                     st.session_state.active_alert = f"CRITICAL ALERT: Outage simulation '{selected_sim}' triggered."
                     
@@ -426,16 +438,26 @@ with tab_ops:
                 else:
                     with st.chat_message("assistant"):
                         with st.spinner("NovaSRE AI Companion is inspecting telemetry and loading diagnostic skills..."):
-                            inv_urn = discover_engine_urn("rca-telemetry-expert", "INVESTIGATOR_AGENT_URN")
-                            if inv_urn and inv_urn.startswith("projects/"):
+                            from app.sre_supervisor import is_network_alert
+                            if is_network_alert(latest_prompt):
+                                agent_name = "network-triage-expert"
+                                urn_env = "NETWORK_TRIAGE_AGENT_URN"
+                                local_agent_func = lambda: getattr(importlib.import_module("app.network_agent"), "network_triage_expert")
+                            else:
+                                agent_name = "rca-telemetry-expert"
+                                urn_env = "INVESTIGATOR_AGENT_URN"
+                                local_agent_func = lambda: getattr(importlib.import_module("app.investigator_agent"), "rca_telemetry_expert")
+
+                            target_urn = discover_engine_urn(agent_name, urn_env)
+                            if target_urn and target_urn.startswith("projects/"):
                                 try:
                                     vertexai.init(project=PROJECT_ID, location=GEMINI_LOCATION)
                                     from google.cloud.aiplatform_v1beta1 import types as aip_types
                                     from vertexai.preview.reasoning_engines import ReasoningEngine
-                                    remote_inv = ReasoningEngine(inv_urn)
-                                    resp = remote_inv.execution_api_client.stream_query_reasoning_engine(
+                                    remote_agent = ReasoningEngine(target_urn)
+                                    resp = remote_agent.execution_api_client.stream_query_reasoning_engine(
                                         request=aip_types.StreamQueryReasoningEngineRequest(
-                                            name=remote_inv.resource_name,
+                                            name=remote_agent.resource_name,
                                             input={"user_id": f"sre-{st.session_state.session_id}", "message": {"role": "user", "parts": [{"text": latest_prompt}]}},
                                             class_method="stream_query",
                                         )
@@ -449,13 +471,14 @@ with tab_ops:
                                     ai_reply = f"Cloud inquiry error: {e}. Running local companion..."
                             else:
                                 import asyncio
+                                import importlib
                                 from google.adk.runners import InMemoryRunner
-                                from app.investigator_agent import rca_telemetry_expert
                                 from google.genai import types as genai_types
+                                target_agent = local_agent_func()
                                 
                                 async def run_companion():
-                                    runner = InMemoryRunner(agent=rca_telemetry_expert, app_name=rca_telemetry_expert.name)
-                                    await runner.session_service.create_session(app_name=rca_telemetry_expert.name, user_id="sre", session_id=st.session_state.session_id)
+                                    runner = InMemoryRunner(agent=target_agent, app_name=target_agent.name)
+                                    await runner.session_service.create_session(app_name=target_agent.name, user_id="sre", session_id=st.session_state.session_id)
                                     msg = genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=latest_prompt)])
                                     chunks = []
                                     async for event in runner.run_async(user_id="sre", session_id=st.session_state.session_id, new_message=msg):
@@ -500,6 +523,27 @@ with tab_ops:
                                 "command": f"scale deployment frontend in namespace default to 1 replica in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}",
                                 "playbook": "Playbook 1 (Infrastructure Replica Scale Outage)",
                                 "risk": "LOW (Pre-approved under Tier 1 Auto-Recovery)"
+                            }
+                        elif ("nat" in active_alert_lower or "snat" in active_alert_lower) and ("nat" in lower_reply or "ports" in lower_reply or "awaiting_approval" in lower_reply or "increase" in lower_reply):
+                            st.session_state.pending_approval = {
+                                "action": "Increase Cloud NAT Minimum Allocated Ports per VM from 64 to 256 on 'nat-gateway-us-central1'.",
+                                "command": "update cloud nat gateway nat-gateway-us-central1 min ports per vm to 256 in region us-central1",
+                                "playbook": "Playbook 7 (Cloud NAT Egress Port Recovery)",
+                                "risk": "LOW (Dynamic egress port capacity expansion)"
+                            }
+                        elif ("networkpolicy" in active_alert_lower or "isolation" in active_alert_lower or "firewall" in active_alert_lower) and ("delete" in lower_reply or "networkpolicy" in lower_reply or "awaiting_approval" in lower_reply or "block" in lower_reply):
+                            st.session_state.pending_approval = {
+                                "action": "Delete blocking NetworkPolicy 'chaos-block-checkoutservice' in namespace 'default'.",
+                                "command": "delete networkpolicy chaos-block-checkoutservice in namespace default in cluster online-boutique in region us-central1",
+                                "playbook": "Playbook 5 (GKE NetworkPolicy Firewall Recovery)",
+                                "risk": "LOW (Restores microservice ingress/egress traffic)"
+                            }
+                        elif ("coredns" in active_alert_lower or "dns" in active_alert_lower) and ("scale" in lower_reply or "coredns" in lower_reply or "replicas" in lower_reply or "awaiting_approval" in lower_reply):
+                            st.session_state.pending_approval = {
+                                "action": "Scale GKE CoreDNS deployment in namespace 'kube-system' to 2 active replicas.",
+                                "command": "scale deployment coredns in namespace kube-system to 2 replicas in cluster online-boutique in region us-central1",
+                                "playbook": "Playbook 6 (GKE CoreDNS Failure Recovery)",
+                                "risk": "LOW (Restores internal cluster DNS resolution)"
                             }
                         st.rerun()
 

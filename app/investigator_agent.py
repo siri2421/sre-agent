@@ -141,6 +141,7 @@ You are the SRE RCA Telemetry Expert (rca_telemetry_expert), an elite autonomous
 1. **Step 1: Baseline Telemetry & Workload Triage**:
    For any incoming alert or outage report, use `list_kubernetes_resources` (for GKE workload alerts) alongside logging and monitoring tools to perform baseline triage. Confirm whether an anomaly is occurring, and identify the affected resource type (`GKE Workload`, `Compute Engine VM`, `Cloud Run Service`, etc.).
    * **Telemetry Error Prevention**: If a metric query returns `Cannot find metric` or an unknown metric type, this indicates a syntax discrepancy in the metric name — do NOT treat this as a monitoring system failure. Proceed directly to inspect workload health via `list_kubernetes_resources`.
+   * **Network Escalation Protocol**: If baseline telemetry or pod inspection reveals network connection timeouts (`dial tcp: i/o timeout`, `Connection refused`, `ETIMEDOUT`, `502 Bad Gateway`, `504 Gateway Timeout`, Cloud NAT port limits, or Firewall drops) but the GKE deployment/pod is healthy (0 crashes), invoke `network_triage_expert_remote` over A2A with parameter `request="Triage network connection timeout anomaly: [ALERT/POD LOGS]"` to delegate dedicated GCP/GKE network diagnostics.
    * If the environment is completely healthy and no anomaly is found, stop and report `remediation_status: "NOT_REQUIRED"`.
 
 2. **Step 2: Load Specialized Resource Skill (Conditional)**:
@@ -164,13 +165,13 @@ You are the SRE RCA Telemetry Expert (rca_telemetry_expert), an elite autonomous
 6. **Progressive Executive Narrative & Structured Output**:
    When reporting your investigation and auto-recovery (or when asking for human approval), you MUST structure your response into 3 clear, professional sections so the SRE operator has complete visibility:
    * **🕵️‍♂️ Diagnostic Findings & Root Cause:** Summarize exact telemetry metrics or K8s deployment status observed (e.g. `readyReplicas = 0`). Explain precisely why the failure occurred.
-   * **⚡ Autonomous A2A Delegation (`remediation-executor`):** State explicitly that you are calling the specialized healing worker (`remediation_executor_remote`) over secure A2A to execute the recovery command. Include the exact action being performed.
+   * **⚡ Autonomous A2A Delegation (`remediation-executor` or `network-triage-expert`):** State explicitly that you are calling the specialized worker over secure A2A to execute the recovery command or network triage. Include the exact action being performed.
    * **✅ Final Resolution Brief & JSON Facts:** Provide a concluding summary confirming what was recovered and paste the final status block. Do not output raw unformatted JSON without context. End your brief with this exact JSON schema inside your summary:
 {{
   "alert": "original alert string",
   "root_cause": "granular explanation of why the failure occurred",
-  "remediation_status": "SUCCESS | FAILED | NOT_REQUIRED",
-  "recommended_action": "RESTART_POD | SCALE_UP | ROLLBACK | RESTART_SERVICE | NONE",
+  "remediation_status": "SUCCESS | FAILED | NOT_REQUIRED | AWAITING_APPROVAL",
+  "recommended_action": "RESTART_POD | SCALE_UP | ROLLBACK | RESTART_SERVICE | UPDATE_FIREWALL | INCREASE_NAT_PORTS | RESTART_DNS | NONE",
   "target_resource": "identifier of the resource (e.g. deployments/frontend, projects/x/instances/y)",
   "severity": "CRITICAL | WARNING | INFO"
 }}
@@ -314,6 +315,103 @@ async def remediation_executor_remote(request: str) -> str:
     except Exception as e:
         return f"REMEDIATION_FAILED: Failed to execute automated scaling remediation. Error details: {str(e)}"
 
+async def network_triage_expert_remote(request: str) -> str:
+    """The SRE Network Triage Expert agent. Use this tool to delegate network connectivity, firewall, Cloud NAT, DNS, and load balancer diagnostics when an anomaly involves network drops or timeouts.
+
+    Args:
+        request: The SRE instruction describing the network anomaly or diagnostic query (e.g. "Triage Cloud NAT SNAT port exhaustion anomaly on paymentservice").
+
+    Returns:
+        A string describing the network triage diagnostic findings and recommended remediation action.
+    """
+    import os
+    import uuid
+    import vertexai
+    from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+    from google.adk.agents.invocation_context import InvocationContext, Session
+    from google.adk.sessions.in_memory_session_service import InMemorySessionService
+    from google.adk.events import Event as ADKEvent
+    from google.genai import types as genai_types
+    import logging
+    
+    logger = logging.getLogger("google_adk")
+    
+    network_urn = os.environ.get("NETWORK_TRIAGE_AGENT_URN")
+    if not network_urn or not network_urn.startswith("projects/"):
+        try:
+            from vertexai.preview.reasoning_engines import ReasoningEngine
+            vertexai.init(project=PROJECT_ID, location=GEMINI_LOCATION)
+            for engine in ReasoningEngine.list():
+                if engine.display_name == "network-triage-expert":
+                    network_urn = engine.resource_name
+                    logger.info("🔍 Dynamically discovered network-triage-expert URN from Vertex AI registry: %s", network_urn)
+                    break
+        except Exception as e:
+            logger.warning("Dynamic discovery registry lookup notice: %s", e)
+            
+    if not network_urn:
+        network_urn = f"projects/{PROJECT_ID}/locations/{GEMINI_LOCATION}/reasoningEngines/network-triage-expert"
+    
+    vertexai.init(
+        project=PROJECT_ID, 
+        location=GEMINI_LOCATION,
+        api_endpoint=f"{GEMINI_LOCATION}-aiplatform.googleapis.com"
+    )
+    if network_urn.startswith("projects/"):
+        a2a_url = f"https://{GEMINI_LOCATION}-aiplatform.googleapis.com/v1beta1/{network_urn}/a2a"
+    else:
+        a2a_url = network_urn
+        
+    from a2a.types import AgentCard, AgentCapabilities
+    card = AgentCard(
+        name="network-triage-expert",
+        description="The SRE Network Triage Expert agent.",
+        version="1.0",
+        url=a2a_url,
+        capabilities=AgentCapabilities(),
+        defaultInputModes=["text"],
+        defaultOutputModes=["text"],
+        skills=[],
+        preferredTransport="HTTP+JSON",
+    )
+
+    agent = RemoteA2aAgent(
+        name="network_triage_expert_remote",
+        agent_card=card,
+    )
+    
+    session = Session(
+        id=f"session-{uuid.uuid4()}", 
+        appName="rca-telemetry-expert", 
+        user_id="sre-user"
+    )
+    session_service = InMemorySessionService()
+    ctx = InvocationContext(
+        session=session,
+        invocation_id=f"inv-{uuid.uuid4()}",
+        session_service=session_service,
+        agent=agent
+    )
+    
+    session.events.append(ADKEvent(
+        author="user",
+        content=genai_types.Content(parts=[genai_types.Part(text=request)]),
+        invocation_id=ctx.invocation_id
+    ))
+    
+    response_texts = []
+    try:
+        async for event in agent._run_async_impl(ctx):
+            if event.error_message:
+                raise RuntimeError(event.error_message)
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if part.text:
+                        response_texts.append(part.text)
+        return "".join(response_texts)
+    except Exception as e:
+        return f"NETWORK_TRIAGE_FAILED: Failed to execute A2A network triage. Error details: {str(e)}"
+
 def get_current_utc_time() -> str:
     """Returns the current UTC date and time as an ISO 8601 string (e.g. 2026-07-18T06:56:00Z). Use this tool to get current timestamps for log and metric filtering queries."""
     from datetime import datetime, timezone
@@ -384,6 +482,7 @@ _rca_tools = [
     FilteringLazyToolset(lambda: get_mcp_toolset(GCS_MCP_SERVER)),
     skill_toolset.SkillToolset(skills=_RCA_SKILLS),
     remediation_executor_remote,
+    network_triage_expert_remote,
     get_current_utc_time,
     utcnow,
     list_kubernetes_resources

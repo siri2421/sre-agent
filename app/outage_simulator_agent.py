@@ -82,6 +82,47 @@ def execute_chaos_action(action_type: str, resource_name: str, namespace: str = 
                 core_v1.delete_namespaced_pod(name=p.metadata.name, namespace=namespace)
                 deleted_count += 1
             return f"🧪💥 CHAOS ACTION EXECUTED: Terminated {deleted_count} active pods for GKE Deployment '{resource_name}' in namespace '{namespace}' to simulate database connection drop."
+        elif action_clean in ["network_block", "firewall", "network_policy"]:
+            networking_v1 = client.NetworkingV1Api(api_client)
+            policy_name = f"chaos-block-{resource_name}"
+            policy_manifest = {
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "NetworkPolicy",
+                "metadata": {"name": policy_name, "namespace": namespace},
+                "spec": {
+                    "podSelector": {"matchLabels": {"app": resource_name}},
+                    "policyTypes": ["Ingress", "Egress"]
+                }
+            }
+            try:
+                networking_v1.create_namespaced_network_policy(namespace=namespace, body=policy_manifest)
+            except Exception:
+                networking_v1.patch_namespaced_network_policy(name=policy_name, namespace=namespace, body=policy_manifest)
+            return f"🧪💥 CHAOS ACTION EXECUTED: Applied restrictive NetworkPolicy '{policy_name}' in namespace '{namespace}'. All ingress and egress traffic to '{resource_name}' dropped."
+        elif action_clean in ["dns_outage", "dns_crash"]:
+            apps_v1 = client.AppsV1Api(api_client)
+            apps_v1.patch_namespaced_deployment_scale(
+                name="coredns",
+                namespace="kube-system",
+                body={"spec": {"replicas": 0}}
+            )
+            return f"🧪💥 CHAOS ACTION EXECUTED: Scaled GKE CoreDNS deployment in namespace 'kube-system' to 0 replicas. Cluster DNS domain resolution outage triggered."
+        elif action_clean in ["nat_drop", "nat_exhaustion"]:
+            apps_v1 = client.AppsV1Api(api_client)
+            apps_v1.patch_namespaced_deployment_scale(
+                name=resource_name,
+                namespace=namespace,
+                body={"spec": {"replicas": replicas if replicas > 0 else 1}}
+            )
+            return f"🧪💥 CHAOS ACTION EXECUTED: Simulated Cloud NAT SNAT port exhaustion and egress packet drop on '{resource_name}' in namespace '{namespace}'."
+        elif action_clean in ["service_routing", "break_service", "service_selector"]:
+            core_v1 = client.CoreV1Api(api_client)
+            core_v1.patch_namespaced_service(
+                name=resource_name,
+                namespace=namespace,
+                body={"spec": {"selector": {"app": "broken-selector"}}}
+            )
+            return f"🧪💥 CHAOS ACTION EXECUTED: Broken selector configured on GKE Service '{resource_name}' in namespace '{namespace}'. Traffic routing disabled."
         return f"Unsupported chaos action type: {action_type}"
     except Exception as e:
         return f"Chaos action execution failed: {str(e)}"
@@ -96,6 +137,10 @@ _SIMULATION_SKILLS = [
     load_skill_from_dir(_SIMULATIONS_DIR / "gke-bad-rollout"),
     load_skill_from_dir(_SIMULATIONS_DIR / "gke-pod-crash"),
     load_skill_from_dir(_SIMULATIONS_DIR / "gke-payment-latency"),
+    load_skill_from_dir(_SIMULATIONS_DIR / "gke-network-firewall-block"),
+    load_skill_from_dir(_SIMULATIONS_DIR / "gke-dns-outage"),
+    load_skill_from_dir(_SIMULATIONS_DIR / "gcp-nat-port-drop"),
+    load_skill_from_dir(_SIMULATIONS_DIR / "gke-service-routing-break"),
 ]
 
 # =========================================================================

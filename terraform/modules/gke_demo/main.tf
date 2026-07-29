@@ -49,7 +49,7 @@ resource "terraform_data" "deploy_microservices_demo" {
   provisioner "local-exec" {
     command = <<-EOT
       set -e
-      export PATH=$PATH:/google/google-cloud-sdk/bin:/usr/lib/google-cloud-sdk/bin:/opt/google-cloud-sdk/bin:/usr/local/google-cloud-sdk/bin:/root/google-cloud-sdk/bin:/usr/local/bin:/usr/bin:/bin
+      export PATH=$HOME/google-cloud-sdk/bin:$HOME/.local/bin:$PATH:/google/google-cloud-sdk/bin:/usr/lib/google-cloud-sdk/bin:/opt/google-cloud-sdk/bin:/usr/local/google-cloud-sdk/bin:/root/google-cloud-sdk/bin:/usr/local/bin:/usr/bin:/bin
       GCLOUD_CMD=$(command -v gcloud || find / -name gcloud -type f 2>/dev/null | head -n 1)
       KUBECTL_CMD=$(command -v kubectl || find / -name kubectl -type f 2>/dev/null | head -n 1)
       
