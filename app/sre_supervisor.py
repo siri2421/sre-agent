@@ -13,7 +13,6 @@ from google.adk.runners import InMemoryRunner
 
 # Import our ADK Agents
 from app.investigator_agent import rca_telemetry_expert, incident_report_writer
-from app.network_agent import network_triage_expert
 from app.remediation_agent import remediation_executor
 from app.config import PROJECT_ID
 
@@ -50,17 +49,6 @@ def log_step(agent: str, message: str, color: str = "36"):
     """Prints a styled, colorized log message showing which agent is acting."""
     # Colors: 36=Cyan (Supervisor), 35=Magenta (RCA), 32=Green (Remediation), 33=Yellow (Reporting), 31=Red (Alert/Gate)
     print(f"\033[1;{color}m[{agent.upper()}]\033[0m {message}")
-
-def is_network_alert(alert_payload: str) -> bool:
-    """Helper to detect if an incoming alert involves Google Cloud networking or GKE network layer issues."""
-    network_keywords = [
-        "network", "vpc", "firewall", "nat", "dns", "connectivity",
-        "ingress", "egress", "rtt", "latency", "packet loss", "packet drop",
-        "cloud armor", "load balancer", "gateway api", "502", "503", "504",
-        "connection refused", "connection reset", "timeout", "route", "subnet"
-    ]
-    payload_lower = alert_payload.lower()
-    return any(keyword in payload_lower for keyword in network_keywords)
 
 # ==========================================
 # 3. RUNNER HELPER FOR STREAMING CONSUMPTION
@@ -110,14 +98,9 @@ async def run_sre_pipeline(alert_payload: str):
     # -------------------------------------------------------------------------
     # STEP 1: TELEMETRY DIAGNOSTICS & CONDITIONAL ROUTING
     # -------------------------------------------------------------------------
-    if is_network_alert(alert_payload):
-        target_agent = network_triage_expert
-        agent_name = "network_triage_expert"
-        log_step("Supervisor", "🌐 Network domain anomaly detected. Conditionally routing alert to network_triage_expert...", "36")
-    else:
-        target_agent = rca_telemetry_expert
-        agent_name = "rca_telemetry_expert"
-        log_step("Supervisor", "⚙️ Workload/Application domain anomaly detected. Routing alert to rca_telemetry_expert...", "36")
+    target_agent = rca_telemetry_expert
+    agent_name = "rca_telemetry_expert"
+    log_step("Supervisor", "Routing alert to rca_telemetry_expert for investigation and domain skill delegation...", "36")
     
     rca_prompt = f"""
     Investigate this GKE/GCP alert in project {PROJECT_ID}:

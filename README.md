@@ -8,137 +8,265 @@ NovaSRE transforms cloud operations from reactive firefighting into proactive, p
 
 ---
 
-## 🏗️ 1. Platform Architecture & Components
+## 🏗️ 1. Platform Architecture & Workflow
 
-The NovaSRE ecosystem consists of three specialized Reasoning Engine agents, a containerized Incident Control Room UI, a central GCS Playbook Repository, and a BigQuery Deployment Ledger interacting securely over Google Cloud API Gateways:
+The NovaSRE ecosystem consists of specialized Vertex AI Reasoning Engine agents, a containerized Incident Control Room UI on Cloud Run, a 4-layer Modular Skill Repository, and universal OneMCP Gateways interacting securely across Google Cloud:
 
 ```mermaid
 graph TD
     subgraph SRE Control Room [UI: novasre-control-room on Cloud Run]
-        UI[Streamlit Web Portal / Supervisor<br/>HITL Approval & Routing]
+        UI[Streamlit Web Portal & AI Companion<br/>HITL Approval & Routing]
+        LedgerUI[Recent Releases Tab<br/>BigQuery Deployment Ledger View]
+        ReportUI[Post-Mortem Tab<br/>Async Incident Reports View]
     end
 
     subgraph Vertex AI Reasoning Engines [Google Cloud Vertex AI Serverless Agents]
-        InvAgent[Investigator Agent<br/>rca-telemetry-expert]
-        NetAgent[Network Expert<br/>network-triage-expert]
-        RemAgent[Remediation Agent<br/>remediation-executor]
-        SimAgent[Chaos Engine<br/>outage-simulator]
+        InvAgent[Investigator Agent<br/><b>rca_telemetry_expert</b><br/>Read-Only Diagnostician]
+        RemAgent[Remediation Worker<br/><b>remediation_executor</b><br/>A2A Mutating Engine]
+        DocAgent[Documentation Compiler<br/><b>incident_report_writer</b><br/>Post-Mortem Writer]
+        SimAgent[Chaos Engine<br/><b>outage_simulator</b><br/>Chaos Engineering]
+    end
+
+    subgraph Modular Skill Ecosystem [app/skills/ & GCS Playbook Bucket]
+        DiagSkills[Layer 1: Diagnostics & Triage<br/>10 Specialist Skills]
+        PlaybookSkills[Layer 2: Recovery Playbooks<br/>8 SRE Remediation Playbooks]
+        SimSkills[Layer 3: Chaos Simulations<br/>8 Outage Injection Playbooks]
+        ReportSkills[Layer 4: Incident Reporting<br/>3 Post-Mortem Skills]
     end
 
     subgraph Universal OneMCP Gateway [Google Cloud OneMCP API Layer]
-        GCS_MCP[GCS OneMCP<br/>storage.googleapis.com]
-        BQ_MCP[BigQuery OneMCP<br/>bigquery.googleapis.com]
+        LOG_MCP[Logging OneMCP<br/>logging.googleapis.com]
+        MON_MCP[Monitoring OneMCP<br/>monitoring.googleapis.com]
+        TRACE_MCP[Trace OneMCP<br/>cloudtrace.googleapis.com]
+        ERR_MCP[Error Reporting OneMCP<br/>clouderrorreporting.googleapis.com]
         GKE_MCP[GKE OneMCP<br/>container.googleapis.com]
-        LOG_MCP[Logging/Monitoring OneMCP<br/>logging & monitoring.googleapis.com]
+        COMPUTE_MCP[Compute & VPC OneMCP<br/>compute.googleapis.com]
+        BQ_MCP[BigQuery OneMCP<br/>bigquery.googleapis.com]
+        GCS_MCP[GCS OneMCP<br/>storage.googleapis.com]
     end
 
     subgraph Production Infrastructure [GCP & GKE Environment]
-        GKE[GKE Cluster: online-boutique<br/>12 Microservices under Synthetic Load]
+        GKE[GKE Autopilot Cluster: online-boutique<br/>12 Microservices under Synthetic Load]
         BQ[BigQuery Ledger<br/>sre_releases.recent_releases]
-        GCS[GCS Playbooks Bucket<br/>gs://project-sre-playbooks]
+        GCS[GCS Bucket<br/>gs://project-telemetry & Playbooks]
     end
 
     %% UI & Agent Interactions
-    UI <-->|1a. App/Workload Alert Query| InvAgent
-    UI <-->|1b. Network Alert Query| NetAgent
-    UI -->|Trigger Outage Scenario| SimAgent
-    UI -->|Human Approval Action| RemAgent
+    UI <-->|1. Trigger Alert / Natural Chat| InvAgent
+    UI -->|2. Trigger Controlled Scenario| SimAgent
+    UI -->|3. HITL Operator Approval| InvAgent
+    LedgerUI <-->|Live Query| BQ
+    ReportUI <-->|Read Markdown Post-Mortems| GCS
 
-    %% A2A Escalation and Delegation
-    InvAgent -->|2a. A2A Network Escalation| NetAgent
-    InvAgent -->|2b. A2A Healing Request| RemAgent
-    NetAgent -->|2c. A2A Healing Request| RemAgent
+    %% Agent-to-Agent (A2A) and Worker Delegation
+    InvAgent -->|A2A Protocol: Execute Approved Healing| RemAgent
+    UI -.->|Async Background Thread| DocAgent
 
-    %% OneMCP Connections
-    InvAgent -->|Triage Observability| LOG_MCP
-    InvAgent -->|Inspect Kubernetes State| GKE_MCP
-    InvAgent -->|Correlate Deployments| BQ_MCP
-    InvAgent -->|Load Modular Playbooks| GCS_MCP
-    
-    NetAgent -->|Triage Network State| GKE_MCP
-    NetAgent -->|Inspect GCP Flow Logs/NAT| LOG_MCP
-    NetAgent -->|Load Network Playbooks| GCS_MCP
-    
-    SimAgent -->|Inject GKE Outage| GKE_MCP
-    RemAgent -->|Execute kubectl / gcloud Healing| GKE_MCP
+    %% Skills Association
+    InvAgent --- DiagSkills
+    InvAgent --- PlaybookSkills
+    SimAgent --- SimSkills
+    DocAgent --- ReportSkills
 
+    %% OneMCP Connections - Investigator
+    InvAgent -->|Triage Logs & Metrics| LOG_MCP
+    InvAgent -->|Query PromQL & Timeseries| MON_MCP
+    InvAgent -->|Decompose Spans & Latency| TRACE_MCP
+    InvAgent -->|Inspect Exception Groups| ERR_MCP
+    InvAgent -->|Inspect Pod & Service State| GKE_MCP
+    InvAgent -->|Audit VPC / NAT / Firewalls| COMPUTE_MCP
+    InvAgent -->|Correlate Rollout History| BQ_MCP
+    InvAgent -->|Load Remote SOPs| GCS_MCP
+
+    %% OneMCP Connections - Workers & Simulators
+    RemAgent -->|Declarative Workload Patches| GKE_MCP
+    RemAgent -->|Declarative Router / Firewall Updates| COMPUTE_MCP
+    SimAgent -->|Inject Workload / Network Failure| GKE_MCP
+    DocAgent -->|Archive Markdown Reports| GCS_MCP
+
+    %% OneMCP to Infrastructure
     LOG_MCP --> GKE
+    MON_MCP --> GKE
+    TRACE_MCP --> GKE
+    ERR_MCP --> GKE
     GKE_MCP --> GKE
+    COMPUTE_MCP --> GKE
     BQ_MCP --> BQ
     GCS_MCP --> GCS
 ```
 
-### Core Components Summary
-1. **`rca-telemetry-expert` (The Diagnostician)**: Operates with **read-only privileges**. Performs progressive baseline triage across Cloud Logging and Monitoring (`LOGGING_MCP_SERVER`, `MONITORING_MCP_SERVER`), inspects GKE workload health (`GKE_MCP_SERVER`), queries the BigQuery Deployment Ledger (`BQ_MCP_SERVER`), and dynamically loads modular markdown playbooks from GCS (`GCS_MCP_SERVER`).
-2. **`network_triage_expert` (The Network Triage Expert)**: Autonomous network specialist agent. Triage VPC Flow Logs, Firewall DENY events, Cloud NAT port drops, Connectivity Tests, GKE eBPF/Dataplane V2 overlay networking, CoreDNS, Gateway API, Cloud Armor WAF, and Global External Application Load Balancers using specialized skills (`google-cloud-networking-observability`, `gke-networking`, `google-cloud-global-frontend-configuration`).
-3. **`sre_supervisor` (Conditional Routing & Safety Gate)**: Inspects incoming alerts to conditionally route network-domain anomalies to `network_triage_expert` and application/workload anomalies to `rca_telemetry_expert`.
-4. **`remediation-executor` (The Remediation Worker)**: The **only** identity endowed with GKE write access (`container.developer`). Executes pre-approved `kubectl` and `gcloud` healing commands when authorized by the Diagnostician or human operator.
-5. **`outage-simulator` (The Chaos Engine)**: An autonomous Chaos Engineering agent that dynamically reads `app/skills/simulations/` playbooks and injects controlled outages into the `online-boutique` GKE cluster.
-6. **`novasre-control-room` (The Incident Operations Center UI)**: A minimalist Streamlit web application running on Cloud Run (`$0` idle cost). Provides operators with the `💬 NovaSRE AI Companion`, real-time BigQuery ledger views, and high-visibility **Human-in-the-Loop (`HITL`) Approval Cards** (`[ ✅ Approve & Execute ]`).
+### Core Agents & Roles Summary
 
+1. **`rca_telemetry_expert` (The Diagnostician & Unified Investigator)**:
+   * **Privilege Level**: Strictly **Read-Only**.
+   * **Function**: Serves as the primary intelligence hub for incident response. Performs baseline triage via Cloud Logging and Cloud Monitoring, loads the generic `investigation-entrypoint` skill to categorize the failure domain, and conditionally loads specialized diagnostic skills (`gke-workloads`, `gke-networking`, `google-cloud-networking-observability`, `google-cloud-global-frontend-configuration`, `gcp-trace`, `gcp-error-reporting`, `sre-correlation`).
+   * **Delegation**: When the root cause is isolated, it loads the corresponding SRE Playbook and delegates execution to `remediation_executor` via Google's Agent-to-Agent (A2A) protocol.
+
+2. **`remediation_executor` (The Secure Healing Worker)**:
+   * **Privilege Level**: **Write-Enabled** (`container.developer`, `compute.networkAdmin`).
+   * **Function**: Operates as a dedicated, least-privilege execution agent exposed via the Vertex AI `A2aAgent` template. Receives structured healing commands over A2A, translates them into declarative OneMCP API operations (`patch_k8s_resource`, `update_router_nat`, `patch_firewall_rule`), verifies post-remediation health, and returns verified execution timestamps.
+
+3. **`incident_report_writer` (The Documentation Compiler & Post-Mortem Expert)**:
+   * **Privilege Level**: **Storage Write** (`storage.objectAdmin`).
+   * **Function**: An autonomous technical writer that compiles comprehensive, publication-ready GitHub Flavored Markdown post-mortems following incident mitigation. Uses log-derived timestamps (`incident_start_time`, `detection_time`, `mitigation_executed_time`, `recovery_verified_time`) to generate chronological timeline tables without redundant secondary telemetry API calls, and automatically archives reports to Cloud Storage (`gs://<bucket>/reports/post_mortem_*.md`).
+
+4. **`outage_simulator` (The Chaos Engineering Agent)**:
+   * **Function**: An autonomous chaos engineering agent that dynamically loads simulation playbooks from `app/skills/simulations/` and injects controlled failure modes (pod crashes, replica downscales, bad image rollouts, CoreDNS outages, NetworkPolicy isolation, Cloud NAT port drops, and broken service routing) into the `online-boutique` GKE cluster.
+
+5. **`novasre-control-room` (The Incident Operations Center UI)**:
+   * **Function**: A sleek, responsive Streamlit application running on Cloud Run (`$0` idle cost). Features the `💬 NovaSRE AI Companion`, real-time BigQuery deployment ledger views, interactive **Human-in-the-Loop (`HITL`) Approval Cards** (`[ ✅ Approve & Execute ]`), and an asynchronous Post-Mortem Report viewer.
 
 ---
 
-## 🌟 2. The 4-Scenario Chaos & Remediation Matrix (`2 Auto vs. 2 Manual HITL`)
+## 🌟 2. Comprehensive 8-Scenario Chaos & Self-Healing Matrix
 
-NovaSRE enforces a strictly balanced **`2 Auto-Remediation vs. 2 Manual HITL Remediation`** policy across our live GKE microservices:
+NovaSRE provides 8 fully orchestrated scenarios spanning Kubernetes workloads, container rollouts, database availability, traffic routing, DNS resolution, and cloud network infrastructure:
 
-| Scenario # | Scenario ID | Target Microservice | Simulated Outage Action (`outage_simulator`) | SRE Remediation Playbook (`sre-playbooks` & GCS) | UI Remediation Tier & Gate |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **1** | `gke-scale-outage` | `frontend` | Drops active replicas to **`0`** (`kubectl scale deployment frontend --replicas=0`) causing 503 errors across the store. | **Playbook 1 (`gke-scale-recovery.md`)**: Scale `frontend` back up to `1` active replica. | **Tier 1 (Auto-Remediation)**:<br>Pre-approved fast-path. Auto-heals (or 1-click test). |
-| **2** | `gke-bad-rollout` | `cartservice` | Pushes an invalid container revision (`cartservice:broken-v2`) causing pod `CrashLoopBackOff`. | **Playbook 2 (`gke-crashloop-rollback.md`)**: Execute `kubectl rollout undo deployment/cartservice` to revert to previous stable release. | **Tier 1 (Auto-Rollback)**:<br>Pre-approved fast-path. Auto-reverts bad rollout immediately upon correlation. |
-| **3** | `gke-pod-crash` | `redis-cart` | Deletes active pods and injects a memory lock causing shopping cart database connection timeouts. | **Playbook 3 (`gke-pod-restart.md`)**: Execute a clean pod rolling restart (`kubectl rollout restart deployment/redis-cart`) to clear stuck pool locks. | **Tier 2 (Manual HITL Approval)**:<br>Requires operator confirmation via UI (`[ ✅ Approve Pod Restart ]`). |
-| **4** | `gke-payment-latency` | `paymentservice` | Throttles capacity to `1 replica` under peak synthetic checkout surges, causing transaction timeouts (`>2000ms`). | **Playbook 4 (`gke-horizontal-upsize.md`)**: Scale `paymentservice` up to **`3 replicas`** (`kubectl scale deployment paymentservice --replicas=3`) to absorb transaction spikes. | **Tier 2 (Manual HITL Approval)**:<br>Requires operator confirmation via UI (`[ ✅ Approve Horizontal Upsize ]`). |
+| # | Scenario ID | Target Resource | Simulated Outage Action (`outage_simulator`) | SRE Recovery Playbook (`app/skills/playbooks/`) | Governance Tier & Execution Policy |
+| :- | :--- | :--- | :--- | :--- | :--- |
+| **1** | `gke-scale-outage` | `frontend` | Scales active replicas to **`0`** (`replicas: 0`) causing HTTP 503 errors across the store. | **Playbook 1 (`gke-scale-recovery`)**: Scale `frontend` back to `1` active replica. | **Tier 1 (Auto-Recovery)**<br>Pre-approved fast-path. Auto-healed via A2A. |
+| **2** | `gke-bad-rollout` | `cartservice` | Deploys invalid container revision (`cartservice:broken-v2`) causing pod `CrashLoopBackOff`. | **Playbook 2 (`gke-crashloop-rollback`)**: Correlates BigQuery release ledger and reverts to previous stable image (`v1.0.4`). | **Tier 1 (Auto-Rollback)**<br>Causal deployment correlation fast-path. Auto-reverted via A2A. |
+| **3** | `gke-dns-outage` | `coredns` (`kube-system`) | Scales CoreDNS to **`0`** replicas, inducing cluster-wide `.svc.cluster.local` resolution timeouts. | **Playbook 6 (`gke-dns-recovery`)**: Scale CoreDNS deployment back to `2` healthy replicas. | **Tier 1 (Auto-Recovery)**<br>Cluster infrastructure fast-path. Auto-scaled via A2A. |
+| **4** | `gke-pod-crash` | `redis-cart` | Terminates active pods and simulates connection pool memory locks. | **Playbook 3 (`gke-pod-restart`)**: Execute clean rolling restart (`rollout restart deployment/redis-cart`). | **Tier 2 (HITL Approval)**<br>Requires operator approval before database disruption. |
+| **5** | `gke-payment-latency` | `paymentservice` | Throttles capacity to `1 replica` under peak synthetic checkout surges, causing p99 latency `>2000ms`. | **Playbook 4 (`gke-horizontal-upsize`)**: Scale deployment up to **`3 replicas`** to absorb load. | **Tier 2 (HITL Approval)**<br>Requires operator approval for capacity/cost scaling. |
+| **6** | `gke-network-firewall-block` | `checkoutservice` | Injects restrictive `NetworkPolicy` dropping all ingress and egress packets. | **Playbook 5 (`gke-network-firewall-recovery`)**: Delete blocking NetworkPolicy to restore pod networking. | **Tier 2 (HITL Approval)**<br>Requires operator confirmation to modify network policies. |
+| **7** | `gcp-nat-port-drop` | `nat-gateway-us-central1` | Simulates Cloud NAT SNAT port exhaustion and outbound packet drop. | **Playbook 7 (`gcp-nat-port-recovery`)**: Increase `minPortsPerVm` from 64 to 256 on Cloud NAT gateway. | **Tier 2 (HITL Approval)**<br>Requires operator confirmation for VPC gateway reconfiguration. |
+| **8** | `gke-service-routing-break` | `checkoutservice` (Service) | Patches K8s Service selector to invalid `app=broken-selector`, disconnecting endpoints. | **Playbook 8 (`gke-service-routing-recovery`)**: Restore Service selector to target `app=checkoutservice`. | **Tier 2 (HITL Approval)**<br>Requires operator confirmation to patch Service definitions. |
 
-### 🛡️ The 3-Tier Resolution Hierarchy & Novel Outage Fallback
+---
 
-To balance execution velocity against production safety—especially when encountering unforeseen zero-day anomalies—NovaSRE orchestrates investigation and self-healing across three autonomous governance tiers:
+## 🛡️ 3. The 3-Tier Operational Resolution Hierarchy
+
+NovaSRE balances execution speed with production safety through a strict 3-tier resolution hierarchy:
+
+```mermaid
+flowchart TD
+    Alert([🚨 Anomaly / Outage Alert]) --> Baseline[Baseline Triage: gcp-logging & gcp-monitoring]
+    Baseline --> Entrypoint[investigation-entrypoint: Domain Categorization]
+    
+    Entrypoint --> DomainCheck{Domain Specialist Analysis}
+    DomainCheck -->|Workloads| WorkloadDiag[gke-workloads / gcp-error-reporting]
+    DomainCheck -->|Networking| NetDiag[gke-networking / google-cloud-networking-observability]
+    DomainCheck -->|Latency & Traces| TraceDiag[gcp-trace / sre-correlation]
+    
+    WorkloadDiag & NetDiag & TraceDiag --> PlaybookCheck{Matches Known Playbook?}
+    
+    PlaybookCheck -->|Yes: Low Risk / High Confidence| Tier1[<b>Tier 1: Autonomous Auto-Recovery</b><br/>Instant A2A delegation to remediation_executor<br/>Zero human intervention]
+    PlaybookCheck -->|Yes: High Impact / State Modification| Tier2[<b>Tier 2: Gated HITL Approval</b><br/>Render Executive Resolution Card in UI<br/>Awaiting Operator Approval]
+    
+    PlaybookCheck -->|No: Unscripted Anomaly| RAGCheck{Developer Knowledge Available?}
+    RAGCheck -->|Yes| Tier2RAG[<b>Tier 2: Dynamic RAG SOP</b><br/>Retrieve GCP Runbook & Propose Plan<br/>Awaiting Operator Approval]
+    RAGCheck -->|No| Tier3[<b>Tier 3: Autonomous LLM Fallback</b><br/>Zero-shot root cause reasoning from telemetry<br/>Formulate plan for HITL Review]
+    
+    Tier1 --> RemExec[remediation_executor executes OneMCP APIs]
+    Tier2 -->|Operator clicks Approve| RemExec
+    Tier2RAG -->|Operator clicks Approve| RemExec
+    Tier3 -->|Operator clicks Approve| RemExec
+    
+    RemExec --> PostMortem[Async Post-Mortem Compilation<br/>incident_report_writer archives to GCS]
+```
 
 1. **Tier 1: Autonomous Auto-Remediation (High Confidence / Low Risk)**  
-   * **When it activates**: Root cause analysis precisely correlates with an established GCS Standard Operating Procedure (`SKILL.md`) or a verified bad rollout record in the BigQuery deployment ledger (e.g., stateless replica drops or broken container releases).
-   * **Execution Flow**: `rca-telemetry-expert` loads the playbook and instantly delegates across Agent-to-Agent (`A2A`) protocol to `remediation-executor`. Service availability is restored in seconds with zero operator intervention required.
+   * **Trigger**: Root cause analysis precisely correlates with an established auto-recovery playbook (e.g., zero-replica scale drops, CoreDNS capacity loss) or a verified bad rollout in the BigQuery deployment ledger.
+   * **Execution Flow**: `rca_telemetry_expert` loads the playbook and delegates directly to `remediation_executor` via A2A. Cluster health is restored in seconds with zero operator intervention.
 
-2. **Tier 2: Gated Human-in-the-Loop Remediation (High Confidence / High Impact)**  
-   * **When it activates**: The diagnosed failure maps to an established playbook, but executing the cure involves stateful disruption, potential cache resets, or financial/resource quota scaling (e.g., restarting database connections or multiplying pod counts under surge load).
-   * **Execution Flow**: The diagnostic engine prepares a detailed **Executive Resolution Brief** in the Control Room with a mandatory security checkpoint. Execution halts until an SRE reviews the evidence and clicks **`✅ Approve & Execute Action`**.
+2. **Tier 2: Gated Human-in-the-Loop Remediation (High Impact / State Disruption)**  
+   * **Trigger**: Root cause matches a playbook involving stateful disruption, database connection restarts, network policy deletion, capacity/cost scaling, or dynamic RAG SOP retrieval.
+   * **Execution Flow**: The agent prepares an **Executive Resolution Brief** in the Control Room. Execution is held until an SRE reviews the evidence and clicks **`[ ✅ Approve & Execute ]`**.
 
-3. **Tier 3: Autonomous LLM Fallback (Zero-Day & Unscripted Anomalies)**  
-   * **When it activates**: An infrastructure issue is detected that **does not match any pre-configured GCS markdown playbook or BigQuery release event** (e.g., novel network latency, strange OOM memory leaks, or unscripted configuration drift).
-   * **Execution Flow**: Instead of throwing an error or failing, the platform falls back to **Tier 3 (LLM Fallback)**:
-     * Leveraging its foundational Gemini reasoning capabilities, `rca-telemetry-expert` acts as an autonomous tier-3 investigator.
-     * It progressively interrogates container error logs (`LOGGING_MCP_SERVER`), inspects metric deviations (`MONITORING_MCP_SERVER`), and queries live Kubernetes pod manifests (`GKE_MCP_SERVER`).
-     * It dynamically formulates an unscripted, highly contextual mitigation strategy and presents its diagnostic hypothesis directly to the operator in the control room chat for HITL review and execution.
+3. **Tier 3: Autonomous Zero-Shot LLM Fallback (Zero-Day & Novel Anomalies)**  
+   * **Trigger**: The anomaly does not match any pre-configured playbook or release ledger record.
+   * **Execution Flow**: `rca_telemetry_expert` leverages Gemini reasoning to progressively interrogate error logs (`LOGGING_MCP_SERVER`), inspect metrics (`MONITORING_MCP_SERVER`), analyze trace spans (`TRACE_MCP_SERVER`), and audit Kubernetes resource manifests (`GKE_MCP_SERVER`). It formulates an unscripted recovery hypothesis and presents it to the operator for HITL review.
 
 ---
 
-## 🌐 3. Dynamic Network Triage & A2A Escalation Flow
+## 📚 4. Modular 4-Layer Skill Architecture (29 Skills)
 
-To minimize diagnostic noise, NovaSRE separates application workload issues from complex cloud routing failures using a dual-path routing and A2A escalation mechanism:
+NovaSRE is powered by 29 modular skills organized into 4 functional layers:
 
-1. **Direct Path (Alert Routing by Supervisor)**
-   * **Trigger**: The SRE Supervisor parses incoming alerts for network signatures (VPC, NAT, DNS, Firewall, Ingress/Egress drops, timeouts).
-   * **Flow**: The alert is directly delegated to the **`network_triage_expert`** to investigate VPC flow logs, Dataplane V2 eBPF drops, and CoreDNS health.
-
-2. **Indirect Path (Dynamic A2A Escalation by Investigator)**
-   * **Trigger**: An alert arrives as a generic application anomaly, so the supervisor delegates it to the **`rca-telemetry-expert`** (Investigator).
-   * **Flow**: The investigator checks GKE workload health and container logs. If it confirms the pods are healthy (0 crashes) but experiencing connection refusals/timeouts (`dial tcp: i/o timeout`, `Connection refused`, `502 Bad Gateway`), it dynamically triggers the **Network Escalation Protocol** by calling the **`network_triage_expert`** remote agent over an Agent-to-Agent (A2A) session.
-   * **Remediation**: The `network-triage-expert` identifies the network issue (such as a bad Service selector or restrictive NetworkPolicy), loads the relevant playbook (e.g., `gke-service-routing-recovery`), and calls the A2A `remediation-executor` to restore connectivity.
+```
+app/skills/
+├── diagnostics/                                # Layer 1: Specialist Triage & Signal Skills (10 skills)
+│   ├── investigation-entrypoint/SKILL.md       # Generic incident orchestrator & domain router
+│   ├── sre-correlation/SKILL.md                # Cross-signal metric-log-trace & BigQuery pivot
+│   ├── gke-workloads/SKILL.md                  # Pod lifecycle, CrashLoopBackOff, resource limits
+│   ├── gke-networking/SKILL.md                 # Dataplane V2, CoreDNS, ClusterIP service routing
+│   ├── gcp-logging/SKILL.md                    # Cloud Logging query design & timestamp extraction
+│   ├── gcp-monitoring/SKILL.md                 # PromQL, timeseries alignment, alert inspection
+│   ├── gcp-trace/SKILL.md                      # Distributed trace breakdown & latency waterfall
+│   ├── gcp-error-reporting/SKILL.md            # Exception group stats & deduplicated stack traces
+│   ├── google-cloud-networking-observability/  # VPC flow logs, firewall rules, Cloud NAT SNAT
+│   └── google-cloud-global-frontend-config/    # Cloud Armor WAF, External ALBs, URL maps
+│
+├── playbooks/                                  # Layer 2: Targeted SRE Recovery Playbooks (8 playbooks)
+│   ├── gke-scale-recovery/SKILL.md             # Playbook 1: Deployment scale recovery (Tier 1)
+│   ├── gke-crashloop-rollback/SKILL.md         # Playbook 2: Bad rollout rollback via BQ (Tier 1)
+│   ├── gke-pod-restart/SKILL.md                # Playbook 3: Redis pod rolling restart (Tier 2)
+│   ├── gke-horizontal-upsize/SKILL.md          # Playbook 4: Payment horizontal scaling (Tier 2)
+│   ├── gke-network-firewall-recovery/SKILL.md  # Playbook 5: NetworkPolicy unblock (Tier 2)
+│   ├── gke-dns-recovery/SKILL.md               # Playbook 6: CoreDNS capacity recovery (Tier 1)
+│   ├── gcp-nat-port-recovery/SKILL.md          # Playbook 7: Cloud NAT min-ports increase (Tier 2)
+│   └── gke-service-routing-recovery/SKILL.md   # Playbook 8: K8s Service selector restore (Tier 2)
+│
+├── simulations/                                # Layer 3: Chaos Engineering Playbooks (8 simulations)
+│   ├── gke-scale-outage/SKILL.md               # Sim 1: Scale frontend deployment to 0
+│   ├── gke-bad-rollout/SKILL.md                # Sim 2: Invalidate cartservice image to broken-v2
+│   ├── gke-pod-crash/SKILL.md                  # Sim 3: Terminate redis-cart pods & lock memory
+│   ├── gke-payment-latency/SKILL.md            # Sim 4: Downscale paymentservice under surge load
+│   ├── gke-network-firewall-block/SKILL.md     # Sim 5: Restrictive NetworkPolicy on checkout
+│   ├── gke-dns-outage/SKILL.md                 # Sim 6: Scale CoreDNS to 0 replicas
+│   ├── gcp-nat-port-drop/SKILL.md              # Sim 7: Cloud NAT SNAT port exhaustion
+│   └── gke-service-routing-break/SKILL.md      # Sim 8: Inject broken selector on checkout Service
+│
+└── reporting/                                  # Layer 4: Post-Mortem & Incident Reporting (3 skills)
+    ├── postmortem-generator/SKILL.md           # Log-derived timeline builder & report generator
+    ├── postmortem-documentation/SKILL.md       # Premium Markdown styling & executive structure
+    └── postmortem-aggregator/SKILL.md          # Multi-source diagnostic & A2A brief synthesis
+```
 
 ---
 
-## 📦 4. BigQuery Deployment Ledger Correlation (`Pivot 5`)
+## ⏱️ 5. Zero-Call Telemetry Timeline & Asynchronous Post-Mortems
 
-When an anomaly occurs (`e.g. cartservice entering CrashLoopBackOff`), NovaSRE does not guess the fix. It performs **Causal Deployment Correlation**:
-1. Queries the seeded BigQuery database using OneMCP (`BQ_MCP_SERVER`):
-   ```sql
-   SELECT * FROM sre_releases.recent_releases WHERE service_name = 'cartservice' ORDER BY timestamp_utc DESC LIMIT 1;
+To eliminate redundant API calls and prevent token bloat during post-incident documentation:
+
+1. **Structured SRE Fact Extraction**: During baseline triage, `rca_telemetry_expert` extracts `incident_start_time` (first log error / metric anomaly) and `detection_time`.
+2. **Verified Execution Timestamps**: When `remediation_executor` runs a fix, it records `mitigation_executed_time` and `recovery_verified_time`.
+3. **Zero-Call Synthesis**: These 4 verified timestamps are packaged into a structured JSON SRE fact block:
+   ```json
+   {
+     "alert": "CRITICAL ALERT: cartservice pod entering CrashLoopBackOff.",
+     "root_cause": "Recent release REL-042 pushed broken container image revision cartservice:broken-v2.",
+     "incident_start_time": "2026-08-07T20:12:04Z",
+     "detection_time": "2026-08-07T20:12:18Z",
+     "remediation_status": "SUCCESS",
+     "recommended_action": "ROLLBACK",
+     "target_resource": "deployments/cartservice",
+     "severity": "CRITICAL"
+   }
    ```
-2. Discovers release **`REL-042`** pushed `gcr.io/google-samples/microservices-demo/cartservice:broken-v2` moments before the crashes started.
-3. Cross-references this causal evidence and automatically triggers **Playbook 2 (Tier 1 Rollback)** (`undo rollout deployment cartservice`) to restore production availability in seconds.
+4. **Asynchronous Generation**: The UI spawns a non-blocking background thread for `incident_report_writer`. The report compiler builds the timeline table directly from session context—**making zero additional OneMCP telemetry calls**—and persists the final Markdown report to `gs://<bucket>/reports/post_mortem_<id>.md`.
 
 ---
 
-## 🚀 5. Comprehensive Deployment Guide
+## 📦 6. BigQuery Deployment Ledger Correlation
+
+When container failures occur (`e.g., cartservice entering CrashLoopBackOff`), NovaSRE performs **Causal Deployment Correlation**:
+
+1. Queries the BigQuery deployment ledger via OneMCP (`BQ_MCP_SERVER`):
+   ```sql
+   SELECT release_id, service_name, container_image, git_commit, deployed_by, timestamp_utc
+   FROM `sre_releases.recent_releases`
+   WHERE service_name = 'cartservice'
+   ORDER BY timestamp_utc DESC
+   LIMIT 1;
+   ```
+2. Identifies that release **`REL-042`** deployed `cartservice:broken-v2` immediately prior to the anomaly.
+3. Automatically triggers **Playbook 2 (Tier 1 Rollback)** (`gke-crashloop-rollback`) to revert to the last stable release (`v1.0.4`) without manual guesswork.
+
+---
+
+## 🚀 7. Comprehensive Deployment Guide
 
 You can deploy NovaSRE to either a **new Google Cloud project** or an **existing project** using our modular Terraform suite (`terraform/`).
 
@@ -232,7 +360,7 @@ gcloud run services update novasre-control-room \
 
 ---
 
-## 🧪 6. How to Simulate Failures & Test
+## 🧪 8. How to Simulate Failures & Test
 
 You can verify and demonstrate the complete **NovaSRE** self-healing architecture either through the interactive Web Portal or directly via the terminal using the Vertex AI Python SDK.
 
@@ -247,15 +375,16 @@ cd terraform && terraform output novasre_control_room_url
 
 Open the HTTPS URL in your browser and run through the live demo workflows:
 
-1. **Check the Deployment Ledger**: In the left column, expand **`🔍 View Deployment Ledger (sre_releases.recent_releases)`** to view the live records synced directly from BigQuery (`REL-042: cartservice broken-v2`, etc.).
+1. **Check the Deployment Ledger**: In the top tab bar, switch to **`📦 Recent Releases (BigQuery Ledger)`** to view the live records synced directly from BigQuery (`REL-042: cartservice broken-v2`, etc.).
 2. **Trigger an Outage Simulation**: 
    * In the left sidebar under **`🛠️ Demo & Simulation`**, expand **`🧪 Simulate Outage Scenarios`**.
-   * Select a scenario from the dropdown (e.g. `🟢 gke-scale-outage (Scale frontend to 0 | Tier 1 Auto)` or `🟡 gke-pod-crash (redis-cart Lock & Timeout | Tier 2 HITL)`).
+   * Select a scenario from the dropdown (e.g. `🟢 gke-scale-outage`, `🟢 gke-bad-rollout`, `🟡 gke-pod-crash`, `🟡 gke-payment-latency`, `🌐 gke-network-firewall-block`, `🌐 gke-dns-outage`, or `🌐 gcp-nat-port-drop`).
    * Click **`💥 Trigger Simulation`**. The Chaos Engine executes the exact failure on GKE and updates the dashboard status to `DEGRADED ⚠️`.
 3. **Trigger Autonomous Investigation & HITL Approval**: 
    * Click **`🔍 Trigger Autonomous Investigation`** (or type a query directly into the `💬 NovaSRE AI Companion` chat stream).
    * **If Tier 1 (Auto-Recovery)**: The agent heals the cluster immediately and confirms recovery.
-   * **If Tier 2 (Manual HITL)**: The UI dynamically renders the **`⚡ Proposed Recovery Action`** confirmation box. Click **`✅ Approve & Execute Action`**. The Remediation Worker executes the fix over A2A, confirms pod readiness (`Ready: 3/3`), sets the status back to `HEALTHY 🟢`, and compiles the **Markdown Post-Mortem Report** directly in the UI.
+   * **If Tier 2 (Manual HITL)**: The UI dynamically renders the **`⚡ Proposed Recovery Action`** confirmation box. Click **`✅ Approve & Execute Action`**. The Remediation Worker executes the fix over A2A, confirms pod readiness, sets the status back to `HEALTHY 🟢`, and compiles the **Markdown Post-Mortem Report** asynchronously in the background.
+4. **Inspect Post-Mortem Reports**: Switch to the **`📑 Compiled Post-Mortem Reports`** tab to view the publication-ready incident report and its GCS archival location.
 
 ---
 
@@ -351,7 +480,7 @@ frontend   1/1     1            1           11h
 
 ---
 
-## 🛠️ 7. Extensibility: How to Expand the Platform for New Issues
+## 🛠️ 9. Extensibility: How to Expand the Platform for New Issues
 
 Because NovaSRE is built upon **Modular Markdown Skills (`SKILL.md`)** and the **Model Context Protocol (MCP)**, expanding the platform to simulate, triage, and remediate brand-new failure scenarios is completely decoupled from core agent code. You do not need to retrain models or modify core Python orchestration logic.
 

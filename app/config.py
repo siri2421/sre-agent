@@ -273,5 +273,6 @@ MONITORING_MCP_SERVER = os.environ.get("MONITORING_MCP_URL", "https://monitoring
 TRACE_MCP_SERVER = os.environ.get("TRACE_MCP_URL", "https://cloudtrace.googleapis.com/mcp")
 ERROR_REPORTING_MCP_SERVER = os.environ.get("ERROR_REPORTING_MCP_URL", "https://clouderrorreporting.googleapis.com/mcp")
 GKE_MCP_SERVER = os.environ.get("GKE_MCP_URL", "https://container.googleapis.com/mcp")
+COMPUTE_MCP_SERVER = os.environ.get("COMPUTE_MCP_URL", "https://compute.googleapis.com/mcp")
 GCS_MCP_SERVER = os.environ.get("GCS_MCP_URL", "https://storage.googleapis.com/mcp")
 BQ_MCP_SERVER = os.environ.get("BQ_MCP_URL", "https://bigquery.googleapis.com/mcp")

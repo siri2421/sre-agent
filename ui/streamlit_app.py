@@ -39,57 +39,59 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom minimalist dark-mode CSS
+# Custom minimalist light-mode CSS
 st.markdown("""
 <style>
     /* Global Background & Typography */
     .stApp {
-        background-color: #0e1117;
-        color: #e0e0e0;
-        font-family: 'Inter', sans-serif;
+        background-color: #f8fafc;
+        color: #0f172a;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     /* Header Card */
     .header-container {
-        background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+        background: linear-gradient(135deg, #ffffff 0%, #f1f5f9 100%);
         padding: 1.5rem 2rem;
         border-radius: 12px;
-        border: 1px solid #374151;
+        border: 1px solid #e2e8f0;
         margin-bottom: 1.5rem;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
     }
     .header-title {
         font-size: 1.75rem;
         font-weight: 700;
-        color: #ffffff;
+        color: #0f172a;
         margin-bottom: 0.25rem;
     }
     .header-sub {
         font-size: 0.9rem;
-        color: #9ca3af;
-    }
-    /* Status Cards */
-    .alert-box {
-        padding: 1.25rem;
-        background-color: #2a1215;
-        border-left: 5px solid #ff4b4b;
-        border-radius: 6px;
-        color: #fce8e6;
-        margin-bottom: 1rem;
-    }
-    .healthy-box {
-        padding: 1.25rem;
-        background-color: #11261d;
-        border-left: 5px solid #21c354;
-        border-radius: 6px;
-        color: #e8fcf0;
-        margin-bottom: 1rem;
+        color: #64748b;
     }
     .approval-card {
         padding: 1.5rem;
-        background-color: #252830;
-        border: 2px solid #f39c12;
+        background-color: #fffbeb;
+        border: 2px solid #f59e0b;
         border-radius: 8px;
+        color: #1e293b;
         margin: 1.5rem 0;
+    }
+    .approval-card h4 {
+        color: #b45309 !important;
+        margin-top: 0;
+    }
+    /* Chat Container Tweaks */
+    [data-testid="stChatMessage"] {
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 0.75rem;
+        color: #0f172a;
+    }
+    /* Sidebar Styling */
+    section[data-testid="stSidebar"] {
+        background-color: #ffffff;
+        border-right: 1px solid #e2e8f0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -107,15 +109,68 @@ st.markdown(f"""
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "active_alert" not in st.session_state:
-    st.session_state.active_alert = "None (System Healthy 🟢)"
-if "cluster_status" not in st.session_state:
-    st.session_state.cluster_status = "HEALTHY 🟢"
+    st.session_state.active_alert = "None"
 if "pending_approval" not in st.session_state:
     st.session_state.pending_approval = None
 if "postmortem_report" not in st.session_state:
     st.session_state.postmortem_report = None
+if "async_report_id" not in st.session_state:
+    st.session_state.async_report_id = None
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
+
+# =========================================================================
+# ASYNCHRONOUS BACKGROUND POST-MORTEM GENERATOR
+# =========================================================================
+import threading
+import time
+
+_ASYNC_REPORTS_STORE = {}
+
+def trigger_async_postmortem(report_key: str, incident_details: str):
+    """Launches an asynchronous background thread to generate postmortem reports without blocking UI investigations."""
+    _ASYNC_REPORTS_STORE[report_key] = {
+        "status": "IN_PROGRESS ⏳",
+        "content": None,
+        "timestamp": time.strftime("%H:%M:%S")
+    }
+    
+    def worker():
+        import asyncio
+        import uuid as _uuid
+        from google.adk.runners import InMemoryRunner
+        from google.genai import types as genai_types
+        from app.investigator_agent import incident_report_writer
+        
+        try:
+            async def run_writer():
+                runner = InMemoryRunner(agent=incident_report_writer, app_name=incident_report_writer.name)
+                sess_id = f"async-rep-{_uuid.uuid4()}"
+                await runner.session_service.create_session(app_name=incident_report_writer.name, user_id="sre-async", session_id=sess_id)
+                msg = genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=incident_details)])
+                chunks = []
+                async for event in runner.run_async(user_id="sre-async", session_id=sess_id, new_message=msg):
+                    if hasattr(event, "content") and event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if hasattr(part, "text") and part.text:
+                                chunks.append(part.text)
+                return "".join(chunks)
+            
+            report_text = asyncio.run(run_writer())
+            _ASYNC_REPORTS_STORE[report_key] = {
+                "status": "SUCCESS ✅",
+                "content": report_text,
+                "timestamp": time.strftime("%H:%M:%S")
+            }
+        except Exception as e:
+            _ASYNC_REPORTS_STORE[report_key] = {
+                "status": "FAILED ❌",
+                "content": f"Failed to generate async postmortem report: {str(e)}",
+                "timestamp": time.strftime("%H:%M:%S")
+            }
+            
+    threading.Thread(target=worker, daemon=True).start()
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _discover_cached(agent_name: str) -> str:
@@ -167,26 +222,26 @@ def format_ai_response(raw_text: str) -> str:
             a2a_text = a2a_match.group(1).strip() if a2a_match else f"Executed `{data.get('recommended_action', 'N/A')}` via secure A2A delegation under Tier 1 Auto-Recovery."
             
             # Build unified executive summary card
-            card_md = f"""<div style="background: rgba(30, 41, 59, 0.75); border: 1px solid rgba(255, 255, 255, 0.12); border-left: 5px solid #10B981; border-radius: 10px; padding: 20px; margin: 15px 0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);">
-    <h3 style="margin-top: 0; color: #10B981; font-family: 'Outfit', sans-serif; display: flex; align-items: center; gap: 8px;">🛡️ NovaSRE Executive Resolution Brief</h3>
-    <table style="width: 100%; border-collapse: collapse; margin: 15px 0; background: rgba(15, 23, 42, 0.5); border-radius: 6px; overflow: hidden;">
+            card_md = f"""<div style="background: #ffffff; border: 1px solid #e2e8f0; border-left: 5px solid #10B981; border-radius: 10px; padding: 20px; margin: 15px 0; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);">
+    <h3 style="margin-top: 0; color: #047857; font-family: 'Outfit', sans-serif; display: flex; align-items: center; gap: 8px;">🛡️ NovaSRE Executive Resolution Brief</h3>
+    <table style="width: 100%; border-collapse: collapse; margin: 15px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
         <tr>
-            <td style="padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.05); width: 30%; color: #94A3B8;"><b>🚨 Alert Trigger</b></td>
-            <td style="padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.05); color: #F87171;"><code>{data.get('alert', 'N/A')}</code></td>
+            <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; width: 30%; color: #64748b;"><b>🚨 Alert Trigger</b></td>
+            <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #dc2626;"><code>{data.get('alert', 'N/A')}</code></td>
         </tr>
         <tr>
-            <td style="padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.05); color: #94A3B8;"><b>🎯 Target Resource</b></td>
-            <td style="padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.05); color: #E2E8F0;"><code>{data.get('target_resource', 'N/A')}</code></td>
+            <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #64748b;"><b>🎯 Target Resource</b></td>
+            <td style="padding: 10px 14px; border-bottom: 1px solid #e2e8f0; color: #0f172a;"><code>{data.get('target_resource', 'N/A')}</code></td>
         </tr>
         <tr>
-            <td style="padding: 10px 14px; color: #94A3B8;"><b>⚡ Autonomous Action</b></td>
-            <td style="padding: 10px 14px; color: #E2E8F0;"><b><code>{data.get('recommended_action', 'N/A')}</code></b> &nbsp;<span style="background: #065F46; color: #34D399; padding: 3px 10px; border-radius: 12px; font-size: 0.85em; font-weight: 600;">{status_badge}</span></td>
+            <td style="padding: 10px 14px; color: #64748b;"><b>⚡ Autonomous Action</b></td>
+            <td style="padding: 10px 14px; color: #0f172a;"><b><code>{data.get('recommended_action', 'N/A')}</code></b> &nbsp;<span style="background: #d1fae5; color: #065f46; padding: 3px 10px; border-radius: 12px; font-size: 0.85em; font-weight: 600;">{status_badge}</span></td>
         </tr>
     </table>
-    <h4 style="margin: 15px 0 6px 0; color: #E2E8F0; font-size: 1.05em;">🕵️‍♂️ Diagnostic & Root Cause Findings</h4>
-    <p style="color: #CBD5E1; line-height: 1.6; margin: 0 0 16px 0; font-size: 0.95em;">{diag_text}</p>
-    <h4 style="margin: 15px 0 6px 0; color: #E2E8F0; font-size: 1.05em;">🤖 Autonomous A2A Execution (`remediation-executor`)</h4>
-    <p style="color: #CBD5E1; line-height: 1.6; margin: 0; font-size: 0.95em;">{a2a_text}</p>
+    <h4 style="margin: 15px 0 6px 0; color: #0f172a; font-size: 1.05em;">🕵️‍♂️ Diagnostic & Root Cause Findings</h4>
+    <p style="color: #334155; line-height: 1.6; margin: 0 0 16px 0; font-size: 0.95em;">{diag_text}</p>
+    <h4 style="margin: 15px 0 6px 0; color: #0f172a; font-size: 1.05em;">🤖 Autonomous A2A Execution (`remediation-executor`)</h4>
+    <p style="color: #334155; line-height: 1.6; margin: 0; font-size: 0.95em;">{a2a_text}</p>
 </div>"""
             return card_md
         except Exception as e:
@@ -234,7 +289,7 @@ def parse_stream_chunks(raw_chunks_list):
                             
     if clean_texts:
         return format_ai_response("\n\n".join([t for t in clean_texts if t.strip()]))
-    return format_ai_response("Investigation complete. Please review active system metrics and status cards above.")
+    return format_ai_response("Investigation complete. Please review diagnostic findings above.")
 
 # =========================================================================
 # 3. SIDEBAR: DEMO & OUTAGE SIMULATION DRAWER
@@ -334,7 +389,6 @@ with st.sidebar:
                 else:
                     st.session_state.active_alert = f"CRITICAL ALERT: Outage simulation '{selected_sim}' triggered."
                     
-                st.session_state.cluster_status = "DEGRADED ⚠️"
                 st.session_state.messages.append({"role": "assistant", "content": f"💥 **Outage Simulation Triggered (`{selected_sim}`)**\n\n{res}"})
                 st.rerun()
 
@@ -348,8 +402,7 @@ with st.sidebar:
             
     if st.button("🔄 Reset Dashboard", use_container_width=True):
         st.session_state.messages = []
-        st.session_state.active_alert = "None (System Healthy 🟢)"
-        st.session_state.cluster_status = "HEALTHY 🟢"
+        st.session_state.active_alert = "None"
         st.session_state.pending_approval = None
         st.session_state.postmortem_report = None
         st.session_state.session_id = str(uuid.uuid4())
@@ -366,186 +419,160 @@ tab_ops, tab_releases, tab_report = st.tabs([
 ])
 
 with tab_ops:
-    col_status, col_chat = st.columns([1, 2.2], gap="large")
+    st.subheader("💬 NovaSRE AI Companion")
+    st.caption("Chat naturally with your autonomous SRE companion for root-cause triage and guided recovery.")
     
-    with col_status:
-        st.subheader("🚨 Active System Status")
-        if st.session_state.cluster_status == "DEGRADED ⚠️":
-            st.markdown(f"""
-            <div class="alert-box">
-                <b>Status:</b> DEGRADED ⚠️<br>
-                <b>Current Alert:</b><br>{st.session_state.active_alert}
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div class="healthy-box">
-                <b>Status:</b> HEALTHY 🟢<br>
-                <b>Current Alert:</b><br>{st.session_state.active_alert}
-            </div>
-            """, unsafe_allow_html=True)
-        st.info("💡 **Tip:** Use the **Simulate Outage Scenarios** drawer on the left to trigger real cluster anomalies or hit **Trigger Autonomous Investigation** to let the AI triage and self-heal.")
-
-    with col_chat:
-        st.subheader("💬 NovaSRE AI Companion")
-        st.caption("Chat naturally with your autonomous SRE companion for root-cause triage and guided recovery.")
-        
-        # Self-contained fixed height scrollable box so chat never overlaps with side elements or stretches down the page!
-        chat_box = st.container(height=520, border=True)
-        with chat_box:
-            for msg in st.session_state.messages:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"], unsafe_allow_html=True)
-                    
-            if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
-                latest_prompt = st.session_state.messages[-1]["content"]
+    # Self-contained fixed height scrollable box so chat never overlaps with side elements or stretches down the page!
+    chat_box = st.container(height=560, border=True)
+    with chat_box:
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"], unsafe_allow_html=True)
                 
-                # If an approval is pending and the user typed APPROVE or REJECT, handle it directly!
-                if st.session_state.pending_approval and latest_prompt.strip().upper() in ["APPROVE", "APPROVED", "YES"]:
-                    app_data = st.session_state.pending_approval
-                    with st.spinner("Executing recovery action via Remediation Executor over A2A and compiling post-mortem..."):
-                        import asyncio
-                        from app.investigator_agent import remediation_executor_remote, incident_report_writer
-                        from google.adk.runners import InMemoryRunner
-                        from google.genai import types as genai_types
-                        
-                        async def execute_and_report():
-                            rem_result = await remediation_executor_remote(app_data['command'])
-                            runner = InMemoryRunner(agent=incident_report_writer, app_name=incident_report_writer.name)
-                            await runner.session_service.create_session(app_name=incident_report_writer.name, user_id="sre", session_id=st.session_state.session_id)
-                            prompt = f"Incident resolved: {st.session_state.active_alert}. Root cause diagnosed under {app_data['playbook']}. Action taken: {app_data['action']}. A2A execution result: {rem_result}. Please compile the full markdown post-mortem report now."
-                            msg = genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=prompt)])
-                            chunks = []
-                            async for event in runner.run_async(user_id="sre", session_id=st.session_state.session_id, new_message=msg):
-                                if hasattr(event, "content") and event.content and event.content.parts:
-                                    for part in event.content.parts:
-                                        if hasattr(part, "text") and part.text:
-                                            chunks.append(part.text)
-                            return rem_result, "".join(chunks)
-                        
-                        rem_res, report_text = asyncio.run(execute_and_report())
-                        st.session_state.postmortem_report = report_text
-                        st.session_state.cluster_status = "HEALTHY 🟢"
-                        st.session_state.active_alert = "None (System Healthy 🟢)"
-                        st.session_state.pending_approval = None
-                        ai_reply = format_ai_response(f"✅ **Recovery Action Approved & Executed Successfully!**\n\n**A2A Execution Brief:**\n{rem_res}\n\nI have compiled and archived the full incident report under the **Compiled Post-Mortem Reports** tab.")
-                        st.session_state.messages.append({"role": "assistant", "content": ai_reply})
-                        st.rerun()
-                elif st.session_state.pending_approval and latest_prompt.strip().upper() in ["REJECT", "REJECTED", "NO"]:
+        if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+            latest_prompt = st.session_state.messages[-1]["content"]
+            
+            # If an approval is pending and the user typed APPROVE or REJECT, handle it directly!
+            if st.session_state.pending_approval and latest_prompt.strip().upper() in ["APPROVE", "APPROVED", "YES"]:
+                app_data = st.session_state.pending_approval
+                with st.spinner("Executing recovery action via Remediation Executor over A2A..."):
+                    import asyncio
+                    from app.investigator_agent import remediation_executor_remote
+                    
+                    rem_res = asyncio.run(remediation_executor_remote(app_data['command']))
+                    
+                    # Trigger asynchronous non-blocking post-mortem generation in background
+                    report_key = str(uuid.uuid4())
+                    st.session_state.async_report_id = report_key
+                    trigger_async_postmortem(
+                        report_key,
+                        f"HITL Remediation executed for alert: '{st.session_state.active_alert}'. Playbook matched: {app_data['playbook']}. Action taken: {app_data['action']}. A2A execution brief:\n{rem_res}\n\nUse your post-mortem reporting skills (`postmortem-generator`, `postmortem-documentation`) to compile the full incident report and archive it to GCS."
+                    )
+                    
+                    st.session_state.active_alert = "None"
                     st.session_state.pending_approval = None
-                    st.session_state.messages.append({"role": "assistant", "content": "❌ **Action Rejected by Operator.** No changes were made to the cluster."})
+                    ai_reply = format_ai_response(f"✅ **Recovery Action Approved & Executed Successfully!**\n\n**A2A Execution Brief:**\n{rem_res}\n\n⚡ *An asynchronous post-mortem report generation task has started in the background without blocking your session. You may initiate new investigations immediately! Check status in the **Incident Post-Mortem Documentation** tab.*")
+                    st.session_state.messages.append({"role": "assistant", "content": ai_reply})
                     st.rerun()
-                else:
-                    with st.chat_message("assistant"):
-                        with st.spinner("NovaSRE AI Companion is inspecting telemetry and loading diagnostic skills..."):
-                            from app.sre_supervisor import is_network_alert
-                            if is_network_alert(latest_prompt):
-                                agent_name = "network-triage-expert"
-                                urn_env = "NETWORK_TRIAGE_AGENT_URN"
-                                local_agent_func = lambda: getattr(importlib.import_module("app.network_agent"), "network_triage_expert")
-                            else:
-                                agent_name = "rca-telemetry-expert"
-                                urn_env = "INVESTIGATOR_AGENT_URN"
-                                local_agent_func = lambda: getattr(importlib.import_module("app.investigator_agent"), "rca_telemetry_expert")
+            elif st.session_state.pending_approval and latest_prompt.strip().upper() in ["REJECT", "REJECTED", "NO"]:
+                st.session_state.pending_approval = None
+                st.session_state.messages.append({"role": "assistant", "content": "❌ **Action Rejected by Operator.** No changes were made to the cluster."})
+                st.rerun()
+            else:
+                with st.chat_message("assistant"):
+                    with st.spinner("NovaSRE AI Companion is inspecting telemetry and loading diagnostic skills..."):
+                        agent_name = "rca-telemetry-expert"
+                        urn_env = "INVESTIGATOR_AGENT_URN"
+                        local_agent_func = lambda: getattr(importlib.import_module("app.investigator_agent"), "rca_telemetry_expert")
 
-                            target_urn = discover_engine_urn(agent_name, urn_env)
-                            if target_urn and target_urn.startswith("projects/"):
-                                try:
-                                    vertexai.init(project=PROJECT_ID, location=GEMINI_LOCATION)
-                                    from google.cloud.aiplatform_v1beta1 import types as aip_types
-                                    from vertexai.preview.reasoning_engines import ReasoningEngine
-                                    remote_agent = ReasoningEngine(target_urn)
-                                    resp = remote_agent.execution_api_client.stream_query_reasoning_engine(
-                                        request=aip_types.StreamQueryReasoningEngineRequest(
-                                            name=remote_agent.resource_name,
-                                            input={"user_id": f"sre-{st.session_state.session_id}", "message": {"role": "user", "parts": [{"text": latest_prompt}]}},
-                                            class_method="stream_query",
-                                        )
+                        target_urn = discover_engine_urn(agent_name, urn_env)
+                        if target_urn and target_urn.startswith("projects/"):
+                            try:
+                                vertexai.init(project=PROJECT_ID, location=GEMINI_LOCATION)
+                                from google.cloud.aiplatform_v1beta1 import types as aip_types
+                                from vertexai.preview.reasoning_engines import ReasoningEngine
+                                remote_agent = ReasoningEngine(target_urn)
+                                resp = remote_agent.execution_api_client.stream_query_reasoning_engine(
+                                    request=aip_types.StreamQueryReasoningEngineRequest(
+                                        name=remote_agent.resource_name,
+                                        input={"user_id": f"sre-{st.session_state.session_id}", "message": {"role": "user", "parts": [{"text": latest_prompt}]}},
+                                        class_method="stream_query",
                                     )
-                                    chunks = []
-                                    for chunk in resp:
-                                        if hasattr(chunk, "data") and chunk.data:
-                                            chunks.append(chunk.data.decode("utf-8", errors="ignore"))
-                                    ai_reply = parse_stream_chunks(chunks) if chunks else "Investigation completed."
-                                except Exception as e:
-                                    ai_reply = f"Cloud inquiry error: {e}. Running local companion..."
-                            else:
-                                import asyncio
-                                import importlib
-                                from google.adk.runners import InMemoryRunner
-                                from google.genai import types as genai_types
-                                target_agent = local_agent_func()
-                                
-                                async def run_companion():
-                                    runner = InMemoryRunner(agent=target_agent, app_name=target_agent.name)
-                                    await runner.session_service.create_session(app_name=target_agent.name, user_id="sre", session_id=st.session_state.session_id)
-                                    msg = genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=latest_prompt)])
-                                    chunks = []
-                                    async for event in runner.run_async(user_id="sre", session_id=st.session_state.session_id, new_message=msg):
-                                        if hasattr(event, "content") and event.content and event.content.parts:
-                                            for part in event.content.parts:
-                                                if hasattr(part, "text") and part.text:
-                                                    chunks.append(part.text)
-                                    return "".join(chunks)
-                                ai_reply = format_ai_response(asyncio.run(run_companion()))
+                                )
+                                chunks = []
+                                for chunk in resp:
+                                    if hasattr(chunk, "data") and chunk.data:
+                                        chunks.append(chunk.data.decode("utf-8", errors="ignore"))
+                                ai_reply = parse_stream_chunks(chunks) if chunks else "Investigation completed."
+                            except Exception as e:
+                                ai_reply = f"Cloud inquiry error: {e}. Running local companion..."
+                        else:
+                            import asyncio
+                            import importlib
+                            from google.adk.runners import InMemoryRunner
+                            from google.genai import types as genai_types
+                            target_agent = local_agent_func()
                             
-                            st.markdown(ai_reply, unsafe_allow_html=True)
-                            st.session_state.messages.append({"role": "assistant", "content": ai_reply})
+                            async def run_companion():
+                                runner = InMemoryRunner(agent=target_agent, app_name=target_agent.name)
+                                await runner.session_service.create_session(app_name=target_agent.name, user_id="sre", session_id=st.session_state.session_id)
+                                msg = genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=latest_prompt)])
+                                chunks = []
+                                async for event in runner.run_async(user_id="sre", session_id=st.session_state.session_id, new_message=msg):
+                                    if hasattr(event, "content") and event.content and event.content.parts:
+                                        for part in event.content.parts:
+                                            if hasattr(part, "text") and part.text:
+                                                chunks.append(part.text)
+                                return "".join(chunks)
+                            ai_reply = format_ai_response(asyncio.run(run_companion()))
                         
-                        # Check if the AI proposed a remediation action requiring HITL approval
-                        lower_reply = ai_reply.lower()
-                        active_alert_lower = st.session_state.active_alert.lower()
+                        st.markdown(ai_reply, unsafe_allow_html=True)
+                        st.session_state.messages.append({"role": "assistant", "content": ai_reply})
                         
-                        if ("redis-cart" in active_alert_lower or "pod terminated" in active_alert_lower) and "restart" in lower_reply and "redis-cart" in lower_reply:
-                            st.session_state.pending_approval = {
-                                "action": "Restart pods for GKE Deployment 'redis-cart' in namespace 'default' to clear stuck database locks.",
-                                "command": f"restart deployment redis-cart in namespace default in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}",
-                                "playbook": "Playbook 3 (Database Lock & Connection Timeout)",
-                                "risk": "LOW (Clean rolling pod restart)"
-                            }
-                        elif ("paymentservice" in active_alert_lower or "latency" in active_alert_lower) and "scale" in lower_reply and "paymentservice" in lower_reply and ("3" in lower_reply or "upsize" in lower_reply):
-                            st.session_state.pending_approval = {
-                                "action": "Horizontal Upsize: Scale GKE Deployment 'paymentservice' in namespace 'default' to 3 active replicas.",
-                                "command": f"scale deployment paymentservice in namespace default to 3 replicas in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}",
-                                "playbook": "Playbook 4 (Payment Concurrency Bottleneck)",
-                                "risk": "LOW (Horizontal capacity expansion)"
-                            }
-                        elif ("cartservice" in active_alert_lower or "crashloop" in active_alert_lower) and ("rollback" in lower_reply or "undo rollout" in lower_reply) and ("do you approve" in lower_reply or "requires operator approval" in lower_reply):
-                            st.session_state.pending_approval = {
-                                "action": "Rollback GKE Deployment 'cartservice' in namespace 'default' to previous stable revision.",
-                                "command": f"undo rollout deployment cartservice in namespace default in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}",
-                                "playbook": "Playbook 2 (Bad Rollout / CrashLoop)",
-                                "risk": "LOW (Pre-approved under Tier 1 Auto-Rollback)"
-                            }
-                        elif ("frontend" in active_alert_lower or "replicas = 0" in active_alert_lower) and "scale" in lower_reply and ("do you approve" in lower_reply or "requires operator approval" in lower_reply):
-                            st.session_state.pending_approval = {
-                                "action": "Scale up GKE Deployment 'frontend' in namespace 'default' to 1 active replica.",
-                                "command": f"scale deployment frontend in namespace default to 1 replica in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}",
-                                "playbook": "Playbook 1 (Infrastructure Replica Scale Outage)",
-                                "risk": "LOW (Pre-approved under Tier 1 Auto-Recovery)"
-                            }
-                        elif ("nat" in active_alert_lower or "snat" in active_alert_lower) and ("nat" in lower_reply or "ports" in lower_reply or "awaiting_approval" in lower_reply or "increase" in lower_reply):
-                            st.session_state.pending_approval = {
-                                "action": "Increase Cloud NAT Minimum Allocated Ports per VM from 64 to 256 on 'nat-gateway-us-central1'.",
-                                "command": "update cloud nat gateway nat-gateway-us-central1 min ports per vm to 256 in region us-central1",
-                                "playbook": "Playbook 7 (Cloud NAT Egress Port Recovery)",
-                                "risk": "LOW (Dynamic egress port capacity expansion)"
-                            }
-                        elif ("networkpolicy" in active_alert_lower or "isolation" in active_alert_lower or "firewall" in active_alert_lower) and ("delete" in lower_reply or "networkpolicy" in lower_reply or "awaiting_approval" in lower_reply or "block" in lower_reply):
-                            st.session_state.pending_approval = {
-                                "action": "Delete blocking NetworkPolicy 'chaos-block-checkoutservice' in namespace 'default'.",
-                                "command": "delete networkpolicy chaos-block-checkoutservice in namespace default in cluster online-boutique in region us-central1",
-                                "playbook": "Playbook 5 (GKE NetworkPolicy Firewall Recovery)",
-                                "risk": "LOW (Restores microservice ingress/egress traffic)"
-                            }
-                        elif ("coredns" in active_alert_lower or "dns" in active_alert_lower) and ("scale" in lower_reply or "coredns" in lower_reply or "replicas" in lower_reply or "awaiting_approval" in lower_reply):
-                            st.session_state.pending_approval = {
-                                "action": "Scale GKE CoreDNS deployment in namespace 'kube-system' to 2 active replicas.",
-                                "command": "scale deployment coredns in namespace kube-system to 2 replicas in cluster online-boutique in region us-central1",
-                                "playbook": "Playbook 6 (GKE CoreDNS Failure Recovery)",
-                                "risk": "LOW (Restores internal cluster DNS resolution)"
-                            }
-                        st.rerun()
+                        # Automatically trigger async background post-mortem generation for investigations without blocking UI
+                        if len(latest_prompt.strip()) > 5:
+                            report_key = str(uuid.uuid4())
+                            st.session_state.async_report_id = report_key
+                            trigger_async_postmortem(
+                                report_key,
+                                f"SRE Investigation completed for query: '{latest_prompt}'. Diagnostic evidence & AI response:\n{ai_reply}\n\nUse your reporting skills (`postmortem-generator`, `postmortem-aggregator`) to format and compile an executive investigation audit report."
+                            )
+                            st.toast("⏳ Async Post-Mortem generator started in the background!", icon="⚡")
+                    
+                    # Check if the AI proposed a remediation action requiring HITL approval
+                    lower_reply = ai_reply.lower()
+                    active_alert_lower = st.session_state.active_alert.lower()
+                    
+                    if ("redis-cart" in active_alert_lower or "pod terminated" in active_alert_lower) and "restart" in lower_reply and "redis-cart" in lower_reply:
+                        st.session_state.pending_approval = {
+                            "action": "Restart pods for GKE Deployment 'redis-cart' in namespace 'default' to clear stuck database locks.",
+                            "command": f"restart deployment redis-cart in namespace default in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}",
+                            "playbook": "Playbook 3 (Database Lock & Connection Timeout)",
+                            "risk": "LOW (Clean rolling pod restart)"
+                        }
+                    elif ("paymentservice" in active_alert_lower or "latency" in active_alert_lower) and "scale" in lower_reply and "paymentservice" in lower_reply and ("3" in lower_reply or "upsize" in lower_reply):
+                        st.session_state.pending_approval = {
+                            "action": "Horizontal Upsize: Scale GKE Deployment 'paymentservice' in namespace 'default' to 3 active replicas.",
+                            "command": f"scale deployment paymentservice in namespace default to 3 replicas in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}",
+                            "playbook": "Playbook 4 (Payment Concurrency Bottleneck)",
+                            "risk": "LOW (Horizontal capacity expansion)"
+                        }
+                    elif ("cartservice" in active_alert_lower or "crashloop" in active_alert_lower) and ("rollback" in lower_reply or "undo rollout" in lower_reply) and ("do you approve" in lower_reply or "requires operator approval" in lower_reply):
+                        st.session_state.pending_approval = {
+                            "action": "Rollback GKE Deployment 'cartservice' in namespace 'default' to previous stable revision.",
+                            "command": f"undo rollout deployment cartservice in namespace default in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}",
+                            "playbook": "Playbook 2 (Bad Rollout / CrashLoop)",
+                            "risk": "LOW (Pre-approved under Tier 1 Auto-Rollback)"
+                        }
+                    elif ("frontend" in active_alert_lower or "replicas = 0" in active_alert_lower) and "scale" in lower_reply and ("do you approve" in lower_reply or "requires operator approval" in lower_reply):
+                        st.session_state.pending_approval = {
+                            "action": "Scale up GKE Deployment 'frontend' in namespace 'default' to 1 active replica.",
+                            "command": f"scale deployment frontend in namespace default to 1 replica in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}",
+                            "playbook": "Playbook 1 (Infrastructure Replica Scale Outage)",
+                            "risk": "LOW (Pre-approved under Tier 1 Auto-Recovery)"
+                        }
+                    elif ("nat" in active_alert_lower or "snat" in active_alert_lower) and ("nat" in lower_reply or "ports" in lower_reply or "awaiting_approval" in lower_reply or "increase" in lower_reply):
+                        st.session_state.pending_approval = {
+                            "action": "Increase Cloud NAT Minimum Allocated Ports per VM from 64 to 256 on 'nat-gateway-us-central1'.",
+                            "command": "update cloud nat gateway nat-gateway-us-central1 min ports per vm to 256 in region us-central1",
+                            "playbook": "Playbook 7 (Cloud NAT Egress Port Recovery)",
+                            "risk": "LOW (Dynamic egress port capacity expansion)"
+                        }
+                    elif ("networkpolicy" in active_alert_lower or "isolation" in active_alert_lower or "firewall" in active_alert_lower) and ("delete" in lower_reply or "networkpolicy" in lower_reply or "awaiting_approval" in lower_reply or "block" in lower_reply):
+                        st.session_state.pending_approval = {
+                            "action": "Delete blocking NetworkPolicy 'chaos-block-checkoutservice' in namespace 'default'.",
+                            "command": "delete networkpolicy chaos-block-checkoutservice in namespace default in cluster online-boutique in region us-central1",
+                            "playbook": "Playbook 5 (GKE NetworkPolicy Firewall Recovery)",
+                            "risk": "LOW (Restores microservice ingress/egress traffic)"
+                        }
+                    elif ("coredns" in active_alert_lower or "dns" in active_alert_lower) and ("scale" in lower_reply or "coredns" in lower_reply or "replicas" in lower_reply or "awaiting_approval" in lower_reply):
+                        st.session_state.pending_approval = {
+                            "action": "Scale GKE CoreDNS deployment in namespace 'kube-system' to 2 active replicas.",
+                            "command": "scale deployment coredns in namespace kube-system to 2 replicas in cluster online-boutique in region us-central1",
+                            "playbook": "Playbook 6 (GKE CoreDNS Failure Recovery)",
+                            "risk": "LOW (Restores internal cluster DNS resolution)"
+                        }
+                    st.rerun()
 
             # Render Human-in-the-Loop Approval Card right inside the scrollable chat container if pending
             if st.session_state.pending_approval:
@@ -562,38 +589,27 @@ with tab_ops:
                 c_app, c_rej = st.columns(2)
                 with c_app:
                     if st.button("✅ Approve & Execute Action", use_container_width=True, type="primary"):
-                        with st.spinner("Executing recovery action via Remediation Executor over A2A and compiling post-mortem..."):
+                        with st.spinner("Executing recovery action via Remediation Executor over A2A..."):
                             st.session_state.messages.append({"role": "user", "content": "APPROVE"})
                             
                             # Call Remediation Executor directly or via A2A helper
                             import asyncio
-                            from app.investigator_agent import remediation_executor_remote, incident_report_writer
-                            from google.adk.runners import InMemoryRunner
-                            from google.genai import types as genai_types
+                            from app.investigator_agent import remediation_executor_remote
                             
-                            async def execute_and_report():
-                                # Execute healing
-                                rem_result = await remediation_executor_remote(app_data['command'])
-                                
-                                # Compile post-mortem report
-                                runner = InMemoryRunner(agent=incident_report_writer, app_name=incident_report_writer.name)
-                                await runner.session_service.create_session(app_name=incident_report_writer.name, user_id="sre", session_id=st.session_state.session_id)
-                                prompt = f"Incident resolved: {st.session_state.active_alert}. Root cause diagnosed under {app_data['playbook']}. Action taken: {app_data['action']}. A2A execution result: {rem_result}. Please compile the full markdown post-mortem report now."
-                                msg = genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=prompt)])
-                                chunks = []
-                                async for event in runner.run_async(user_id="sre", session_id=st.session_state.session_id, new_message=msg):
-                                    if hasattr(event, "content") and event.content and event.content.parts:
-                                        for part in event.content.parts:
-                                            if hasattr(part, "text") and part.text:
-                                                chunks.append(part.text)
-                                return rem_result, "".join(chunks)
+                            # Execute healing synchronously for immediate recovery
+                            rem_res = asyncio.run(remediation_executor_remote(app_data['command']))
                             
-                            rem_res, report_text = asyncio.run(execute_and_report())
-                            st.session_state.postmortem_report = report_text
-                            st.session_state.cluster_status = "HEALTHY 🟢"
-                            st.session_state.active_alert = "None (System Healthy 🟢)"
+                            # Trigger asynchronous non-blocking post-mortem generation in background
+                            report_key = str(uuid.uuid4())
+                            st.session_state.async_report_id = report_key
+                            trigger_async_postmortem(
+                                report_key,
+                                f"HITL Remediation executed for alert: '{st.session_state.active_alert}'. Playbook matched: {app_data['playbook']}. Action taken: {app_data['action']}. A2A execution brief:\n{rem_res}\n\nUse your post-mortem reporting skills (`postmortem-generator`, `postmortem-documentation`) to compile the full incident report and archive it to GCS."
+                            )
+                            
+                            st.session_state.active_alert = "None"
                             st.session_state.pending_approval = None
-                            st.session_state.messages.append({"role": "assistant", "content": f"✅ **Recovery Action Approved & Executed Successfully!**\n\n**A2A Execution Brief:**\n{rem_res}\n\nI have compiled and archived the full incident report under the **Compiled Post-Mortem Reports** tab."})
+                            st.session_state.messages.append({"role": "assistant", "content": f"✅ **Recovery Action Approved & Executed Successfully!**\n\n**A2A Execution Brief:**\n{rem_res}\n\n⚡ *An asynchronous post-mortem report generation task has started in the background without blocking your session. You may initiate new investigations immediately! Check status in the **Incident Post-Mortem Documentation** tab.*"})
                             st.rerun()
                 with c_rej:
                     if st.button("❌ Reject Action", use_container_width=True):
@@ -618,8 +634,29 @@ with tab_releases:
     """)
 
 with tab_report:
-    st.subheader("📄 Incident Post-Mortem Documentation")
-    if st.session_state.postmortem_report:
+    st.subheader("📄 Incident Post-Mortem Documentation (Async Generator)")
+    report_key = st.session_state.get("async_report_id")
+    if report_key and report_key in _ASYNC_REPORTS_STORE:
+        rep_data = _ASYNC_REPORTS_STORE[report_key]
+        status = rep_data.get("status", "UNKNOWN")
+        timestamp = rep_data.get("timestamp", "")
+        
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            if "IN_PROGRESS" in status:
+                st.info(f"⏳ **Async Post-Mortem Generator Status:** `{status}` (Started at {timestamp})\n\n*The report is actively compiling in the background via `incident_report_writer`. You can safely switch back to the Chat tab and initiate new investigations!*")
+            elif "SUCCESS" in status:
+                st.success(f"✅ **Async Post-Mortem Generator Status:** `{status}` (Completed at {timestamp})")
+            else:
+                st.error(f"❌ **Async Post-Mortem Generator Status:** `{status}`\n\nDetails: {rep_data.get('content', '')}")
+        with col2:
+            if st.button("🔄 Refresh Status", use_container_width=True):
+                st.rerun()
+                
+        if rep_data.get("content") and "SUCCESS" in status:
+            st.markdown("---")
+            st.markdown(rep_data["content"], unsafe_allow_html=True)
+    elif st.session_state.get("postmortem_report"):
         st.markdown(st.session_state.postmortem_report, unsafe_allow_html=True)
     else:
-        st.info("No compiled report for the current session yet. Reports render automatically right once an active incident is diagnosed and resolved via A2A.")
+        st.info("No compiled report for the current session yet. Reports generate automatically in the background as an asynchronous task whenever an investigation or HITL remediation is performed in the UI.")

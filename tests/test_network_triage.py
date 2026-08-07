@@ -14,7 +14,7 @@ def run_cmd(cmd):
     return result
 
 def main():
-    log("Starting Network Triage Agent Integration Test Scenario")
+    log("Starting Unified SRE Investigator (Network Domain) Integration Test Scenario")
     
     # 1. Inject the chaos network policy to create the failure
     log("Applying restrictive NetworkPolicy 'chaos-block-checkoutservice' in default namespace...")

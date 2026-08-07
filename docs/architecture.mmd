@@ -1,0 +1,80 @@
+graph TD
+    subgraph SRE Control Room [UI & Orchestration: novasre-control-room on Cloud Run]
+        UI[Streamlit Web Portal & AI Companion<br/>HITL Approval & Routing]
+        LedgerUI[Recent Releases Tab<br/>BigQuery Deployment Ledger View]
+        ReportUI[Post-Mortem Tab<br/>Async Incident Reports View]
+    end
+
+    subgraph Vertex AI Reasoning Engines [Google Cloud Vertex AI Serverless Agents]
+        InvAgent[Investigator Agent<br/><b>rca_telemetry_expert</b><br/>Read-Only Diagnostician]
+        RemAgent[Remediation Worker<br/><b>remediation_executor</b><br/>A2A Mutating Engine]
+        DocAgent[Documentation Compiler<br/><b>incident_report_writer</b><br/>Post-Mortem Writer]
+        SimAgent[Chaos Engine<br/><b>outage_simulator</b><br/>Chaos Engineering]
+    end
+
+    subgraph Modular Skill Ecosystem [app/skills/ & GCS Playbook Bucket]
+        DiagSkills[Layer 1: Diagnostics & Triage<br/>10 Specialist Skills]
+        PlaybookSkills[Layer 2: Recovery Playbooks<br/>8 SRE Remediation Playbooks]
+        SimSkills[Layer 3: Chaos Simulations<br/>8 Outage Injection Playbooks]
+        ReportSkills[Layer 4: Incident Reporting<br/>3 Post-Mortem Skills]
+    end
+
+    subgraph Universal OneMCP Gateway [Google Cloud OneMCP API Layer]
+        LOG_MCP[Logging OneMCP<br/>logging.googleapis.com]
+        MON_MCP[Monitoring OneMCP<br/>monitoring.googleapis.com]
+        TRACE_MCP[Trace OneMCP<br/>cloudtrace.googleapis.com]
+        ERR_MCP[Error Reporting OneMCP<br/>clouderrorreporting.googleapis.com]
+        GKE_MCP[GKE OneMCP<br/>container.googleapis.com]
+        COMPUTE_MCP[Compute & VPC OneMCP<br/>compute.googleapis.com]
+        BQ_MCP[BigQuery OneMCP<br/>bigquery.googleapis.com]
+        GCS_MCP[GCS OneMCP<br/>storage.googleapis.com]
+    end
+
+    subgraph Production Infrastructure [GCP & GKE Environment]
+        GKE[GKE Autopilot Cluster: online-boutique<br/>12 Microservices under Synthetic Load]
+        BQ[BigQuery Ledger<br/>sre_releases.recent_releases]
+        GCS[GCS Bucket<br/>gs://project-telemetry & Playbooks]
+    end
+
+    %% UI & Agent Interactions
+    UI <-->|1. Trigger Alert / Natural Chat| InvAgent
+    UI -->|2. Trigger Controlled Scenario| SimAgent
+    UI -->|3. HITL Operator Approval| InvAgent
+    LedgerUI <-->|Live Query| BQ
+    ReportUI <-->|Read Markdown Post-Mortems| GCS
+
+    %% Agent-to-Agent (A2A) and Worker Delegation
+    InvAgent -->|A2A Protocol: Execute Approved Healing| RemAgent
+    UI -.->|Async Background Thread| DocAgent
+
+    %% Skills Association
+    InvAgent --- DiagSkills
+    InvAgent --- PlaybookSkills
+    SimAgent --- SimSkills
+    DocAgent --- ReportSkills
+
+    %% OneMCP Connections - Investigator
+    InvAgent -->|Triage Logs & Metrics| LOG_MCP
+    InvAgent -->|Query PromQL & Timeseries| MON_MCP
+    InvAgent -->|Decompose Spans & Latency| TRACE_MCP
+    InvAgent -->|Inspect Exception Groups| ERR_MCP
+    InvAgent -->|Inspect Pod & Service State| GKE_MCP
+    InvAgent -->|Audit VPC / NAT / Firewalls| COMPUTE_MCP
+    InvAgent -->|Correlate Rollout History| BQ_MCP
+    InvAgent -->|Load Remote SOPs| GCS_MCP
+
+    %% OneMCP Connections - Workers & Simulators
+    RemAgent -->|Declarative Workload Patches| GKE_MCP
+    RemAgent -->|Declarative Router / Firewall Updates| COMPUTE_MCP
+    SimAgent -->|Inject Workload / Network Failure| GKE_MCP
+    DocAgent -->|Archive Markdown Reports| GCS_MCP
+
+    %% OneMCP to Infrastructure
+    LOG_MCP --> GKE
+    MON_MCP --> GKE
+    TRACE_MCP --> GKE
+    ERR_MCP --> GKE
+    GKE_MCP --> GKE
+    COMPUTE_MCP --> GKE
+    BQ_MCP --> BQ
+    GCS_MCP --> GCS

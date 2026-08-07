@@ -7,7 +7,7 @@ description: Playbook 8 (Tier 2 HITL Approval) — Use when GKE service routing 
 
 ## Target Scenario
 * **Target Component**: GKE Service `checkoutservice`
-* **Diagnostic Trigger**: `network_triage_expert` detects incoming requests timeout or fail to reach pods because the service selector matches `broken-selector` instead of `checkoutservice`.
+* **Diagnostic Trigger**: `rca_telemetry_expert` detects incoming requests timeout or fail to reach pods because the service selector matches `broken-selector` instead of `checkoutservice`.
 
 ## Remediation Action (Tier 2 - HITL Approval Required)
 1. Present the recommended service selector restoration plan to the human operator: `"Restore GKE Service 'checkoutservice' selector in namespace 'default' to target pods with label 'app=checkoutservice'."`

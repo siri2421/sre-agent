@@ -229,7 +229,7 @@ def deploy_agent(display_name: str, module_name: str, entrypoint_object: str, en
             "requests>=2.31.0",
             "fastapi>=0.110.0",
             "uvicorn>=0.28.0",
-            "mcp"
+            "mcp==1.27.2"
         ],
         extra_packages=["./app"],
         service_account=DEFAULT_SERVICE_ACCOUNT,
@@ -262,7 +262,6 @@ def main():
         ("remediation-executor", "app.remediation_agent", "agent_engine"),
         ("outage-simulator", "app.outage_simulator_agent", "agent_engine"),
         ("rca-telemetry-expert", "app.investigator_agent", "agent_engine"),
-        ("network-triage-expert", "app.network_agent", "network_agent_engine"),
     ]
     
     deployed_urns = {}
@@ -286,8 +285,7 @@ def main():
     print(f"\n🚀 Newly deployed GKE Remediation Agent URN: {deployed_urns.get('remediation-executor')}")
     print(f"\n🚀 Newly deployed Outage Simulator URN: {deployed_urns.get('outage-simulator')}")
     print(f"\n🚀 Newly deployed Investigator Agent URN: {deployed_urns.get('rca-telemetry-expert')}")
-    print(f"\n🚀 Newly deployed Network Triage Agent URN: {deployed_urns.get('network-triage-expert')}")
-    print("\n🎉 ALL 4 AGENTS DEPLOYED SUCCESSFULLY TO VERTEX AI REASONING ENGINES!")
+    print("\n🎉 ALL 3 AGENTS DEPLOYED SUCCESSFULLY TO VERTEX AI REASONING ENGINES!")
     
     # Configure IAM roles sequentially
     grant_iam_roles(DEFAULT_SERVICE_ACCOUNT, None)
@@ -301,7 +299,7 @@ def main():
             gcloud_bin, "run", "services", "update", "novasre-control-room",
             "--region", LOCATION,
             "--project", PROJECT_ID,
-            f"--update-env-vars=REMEDIATION_AGENT_URN={deployed_urns.get('remediation-executor')},OUTAGE_SIMULATOR_URN={deployed_urns.get('outage-simulator')},INVESTIGATOR_AGENT_URN={deployed_urns.get('rca-telemetry-expert')},NETWORK_TRIAGE_AGENT_URN={deployed_urns.get('network-triage-expert')}"
+            f"--update-env-vars=REMEDIATION_AGENT_URN={deployed_urns.get('remediation-executor')},OUTAGE_SIMULATOR_URN={deployed_urns.get('outage-simulator')},INVESTIGATOR_AGENT_URN={deployed_urns.get('rca-telemetry-expert')}"
         ], check=True)
         print("✅ Cloud Run service 'novasre-control-room' updated successfully with new agent URNs!")
     except Exception as e:
