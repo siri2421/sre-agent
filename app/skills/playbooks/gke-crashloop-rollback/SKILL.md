@@ -10,6 +10,6 @@ description: Playbook 2 (Tier 1 Auto-Rollback) — Use when a GKE deployment (li
 * **Diagnostic Trigger**: `get_pod_logs` shows initialization exceptions or `sre-correlation` (BigQuery `sre_releases.recent_releases`) verifies a recent deployment (`REL-042: broken-v2`) pushed right before crashes started.
 
 ## Remediation Action (Tier 1 - Fast-Path Auto-Rollback)
-1. You are pre-approved to **automatically execute a deployment rollback** (`rollout undo`) to immediately revert the broken image and restore checkout functionality.
-2. Call `remediation_executor_remote("undo rollout deployment cartservice in namespace default in cluster online-boutique in region us-central1")` automatically.
+1. You are pre-approved to automatically execute a deployment rollback to immediately revert the broken image and restore checkout functionality.
+2. Call `remediation_executor_remote("Revert GKE Deployment 'cartservice' in namespace 'default' in cluster 'online-boutique' in region 'us-central1' to its previous stable container image revision (gcr.io/google-samples/microservices-demo/cartservice:v1.0.4) and verify replacement pods transition to a healthy Ready state.")` automatically.
 3. Verify that replacement pods reach `Running` (`Ready: 1/1`) and report `SUCCESS`.

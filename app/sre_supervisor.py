@@ -96,31 +96,39 @@ async def run_sre_pipeline(alert_payload: str):
     print("=" * 75)
 
     # -------------------------------------------------------------------------
-    # STEP 1: TELEMETRY DIAGNOSTICS (rca_telemetry_expert)
+    # STEP 1: TELEMETRY DIAGNOSTICS & CONDITIONAL ROUTING
     # -------------------------------------------------------------------------
-    log_step("Supervisor", "Delegating alert to rca_telemetry_expert...", "36")
+    target_agent = rca_telemetry_expert
+    agent_name = "rca_telemetry_expert"
+    log_step("Supervisor", "Routing alert to rca_telemetry_expert for investigation and domain skill delegation...", "36")
     
     rca_prompt = f"""
-    Investigate this GKE alert in project {PROJECT_ID}:
+    Investigate this GKE/GCP alert in project {PROJECT_ID}:
     '{alert_payload}'
     
-    Query your logging, monitoring, and tracing tools, find the root cause, and return your SRE JSON facts packet.
+    Query your logging, monitoring, tracing, and network tools, find the root cause, and return your SRE JSON facts packet.
     """
     
     # Run the diagnostician and wait for results
-    rca_response = await run_agent_locally(rca_telemetry_expert, rca_prompt, f"rca-{session_id}")
+    rca_response = await run_agent_locally(target_agent, rca_prompt, f"rca-{session_id}")
+
     
     # Parse the structured SRE facts packet
     try:
-        cleaned_response = rca_response.strip()
-        if cleaned_response.startswith("```json"):
-            cleaned_response = cleaned_response[7:]
-        if cleaned_response.endswith("```"):
-            cleaned_response = cleaned_response[:-3]
+        import re
+        json_match = re.search(r"```json\s*(.*?)\s*```", rca_response, re.DOTALL)
+        if json_match:
+            cleaned_response = json_match.group(1)
+        else:
+            cleaned_response = rca_response.strip()
+            if cleaned_response.startswith("```json"):
+                cleaned_response = cleaned_response[7:]
+            if cleaned_response.endswith("```"):
+                cleaned_response = cleaned_response[:-3]
         cleaned_response = cleaned_response.strip()
         
         rca_data = json.loads(cleaned_response)
-        log_step("rca_telemetry_expert", f"Diagnostics complete. Isolated root cause:\n{json.dumps(rca_data, indent=2)}", "35")
+        log_step(agent_name, f"Diagnostics complete. Isolated root cause:\n{json.dumps(rca_data, indent=2)}", "35")
     except Exception as e:
         log_step("Supervisor", f"CRITICAL: Failed to parse RCA Agent response as JSON. Raw response:\n{rca_response}", "31")
         return

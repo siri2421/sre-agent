@@ -24,7 +24,7 @@ resource "terraform_data" "run_python_deployer" {
   provisioner "local-exec" {
     command = <<-EOT
       set -e
-      export PATH=$PATH:/google/google-cloud-sdk/bin:/usr/lib/google-cloud-sdk/bin:/opt/google-cloud-sdk/bin:/usr/local/google-cloud-sdk/bin:/root/google-cloud-sdk/bin:/usr/local/bin:/usr/bin:/bin
+      export PATH=$HOME/google-cloud-sdk/bin:$HOME/.local/bin:$PATH:/google/google-cloud-sdk/bin:/usr/lib/google-cloud-sdk/bin:/opt/google-cloud-sdk/bin:/usr/local/google-cloud-sdk/bin:/root/google-cloud-sdk/bin:/usr/local/bin:/usr/bin:/bin
       export GCP_PROJECT_ID=${var.gcp_project_id}
       export GOOGLE_CLOUD_LOCATION=${var.gcp_region}
       export STAGING_BUCKET=gs://${var.staging_bucket_name}

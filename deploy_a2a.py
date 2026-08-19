@@ -229,7 +229,7 @@ def deploy_agent(display_name: str, module_name: str, entrypoint_object: str, en
             "requests>=2.31.0",
             "fastapi>=0.110.0",
             "uvicorn>=0.28.0",
-            "mcp"
+            "mcp==1.27.2"
         ],
         extra_packages=["./app"],
         service_account=DEFAULT_SERVICE_ACCOUNT,
@@ -237,10 +237,6 @@ def deploy_agent(display_name: str, module_name: str, entrypoint_object: str, en
     )
     
     print(f"✅ Deployment completed. Agent URN: {remote_app.resource_name}")
-    
-    # Configure IAM roles
-    grant_iam_roles(DEFAULT_SERVICE_ACCOUNT, None)
-    
     return remote_app
 
 def main():
@@ -262,45 +258,48 @@ def main():
             print(f"⚠️ Could not auto-update Cloud Run env var: {e}")
         return
 
-    import concurrent.futures
-    print("\n⚡ Deploying ALL 3 AGENTS (`remediation-executor`, `outage-simulator`, `rca-telemetry-expert`) simultaneously in parallel...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        future_rem = executor.submit(
-            deploy_agent,
-            display_name="remediation-executor",
-            module_name="app.remediation_agent",
-            entrypoint_object="agent_engine"
-        )
-        future_sim = executor.submit(
-            deploy_agent,
-            display_name="outage-simulator",
-            module_name="app.outage_simulator_agent",
-            entrypoint_object="agent_engine"
-        )
-        future_inv = executor.submit(
-            deploy_agent,
-            display_name="rca-telemetry-expert",
-            module_name="app.investigator_agent",
-            entrypoint_object="agent_engine"
-        )
-        rem_app = future_rem.result()
-        sim_app = future_sim.result()
-        inv_app = future_inv.result()
-        
-    print(f"\n🚀 Newly deployed GKE Remediation Agent URN: {rem_app.resource_name}")
-    print(f"\n🚀 Newly deployed Outage Simulator URN: {sim_app.resource_name}")
-    print(f"\n🚀 Newly deployed Investigator Agent URN: {inv_app.resource_name}")
-    print("\n🎉 ALL 3 AGENTS (REMEDIATION, OUTAGE-SIMULATOR, AND INVESTIGATOR) DEPLOYED SUCCESSFULLY IN PARALLEL TO VERTEX AI REASONING ENGINES!")
+    agents_to_deploy = [
+        ("remediation-executor", "app.remediation_agent", "agent_engine"),
+        ("outage-simulator", "app.outage_simulator_agent", "agent_engine"),
+        ("rca-telemetry-expert", "app.investigator_agent", "agent_engine"),
+    ]
     
+    deployed_urns = {}
+    print("\n⚡ Deploying agents sequentially to Vertex AI Reasoning Engines...")
+    for display_name, module_name, entrypoint in agents_to_deploy:
+        success = False
+        for attempt in range(1, 4):
+            try:
+                print(f"Deploying {display_name} (Attempt {attempt}/3)...")
+                remote_app = deploy_agent(display_name, module_name, entrypoint)
+                deployed_urns[display_name] = remote_app.resource_name
+                success = True
+                break
+            except Exception as e:
+                print(f"⚠️ Attempt {attempt} failed for {display_name}: {e}")
+                time.sleep(5)
+        if not success:
+            print(f"❌ Failed to deploy {display_name} after 3 attempts.")
+            sys.exit(1)
+            
+    print(f"\n🚀 Newly deployed GKE Remediation Agent URN: {deployed_urns.get('remediation-executor')}")
+    print(f"\n🚀 Newly deployed Outage Simulator URN: {deployed_urns.get('outage-simulator')}")
+    print(f"\n🚀 Newly deployed Investigator Agent URN: {deployed_urns.get('rca-telemetry-expert')}")
+    print("\n🎉 ALL 3 AGENTS DEPLOYED SUCCESSFULLY TO VERTEX AI REASONING ENGINES!")
+    
+    # Configure IAM roles sequentially
+    grant_iam_roles(DEFAULT_SERVICE_ACCOUNT, None)
+
     # Automatically sync live Cloud Run environment variables to match these fresh URNs right now!
     try:
-        import subprocess
+        import subprocess, shutil
+        gcloud_bin = shutil.which("gcloud") or "/usr/local/google/home/madhavikarra/google-cloud-sdk/bin/gcloud"
         print("\n⚡ Automatically syncing fresh Reasoning Engine URNs to live Cloud Run service 'novasre-control-room'...")
         subprocess.run([
-            "gcloud", "run", "services", "update", "novasre-control-room",
+            gcloud_bin, "run", "services", "update", "novasre-control-room",
             "--region", LOCATION,
             "--project", PROJECT_ID,
-            f"--update-env-vars=REMEDIATION_AGENT_URN={rem_app.resource_name},OUTAGE_SIMULATOR_URN={sim_app.resource_name},INVESTIGATOR_AGENT_URN={inv_app.resource_name}"
+            f"--update-env-vars=REMEDIATION_AGENT_URN={deployed_urns.get('remediation-executor')},OUTAGE_SIMULATOR_URN={deployed_urns.get('outage-simulator')},INVESTIGATOR_AGENT_URN={deployed_urns.get('rca-telemetry-expert')}"
         ], check=True)
         print("✅ Cloud Run service 'novasre-control-room' updated successfully with new agent URNs!")
     except Exception as e:
