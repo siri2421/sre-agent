@@ -14,7 +14,7 @@ from google.adk.runners import InMemoryRunner
 # Import our ADK Agents
 from app.investigator_agent import rca_telemetry_expert, incident_report_writer
 from app.remediation_agent import remediation_executor
-from app.config import PROJECT_ID
+from app.config import PROJECT_ID, TELEMETRY_BUCKET, save_postmortem_to_gcs
 
 # ==========================================
 # 1. CENTRALIZED HITL SESSION STORE & FASTAPI
@@ -213,19 +213,33 @@ async def run_sre_pipeline(alert_payload: str):
     log_step("Supervisor", "Invoking incident_report_writer as reporting subagent...", "36")
     
     reporting_prompt = f"""
-    An incident occurred and has been successfully remediated. Please compile the post-mortem report and archive it to GCS.
+    An incident occurred and has been successfully remediated (Action: '{action}' on '{resource}'). 
+    Please compile a publication-ready Markdown post-mortem report and archive it to GCS bucket '{TELEMETRY_BUCKET}'.
     
     **Incident Details:**
     - Alert: {alert_payload}
     - Root Cause: {root_cause}
     - Action Executed: {action} on {resource}
+    - Remediation Status: {remediation_status}
     - Execution Outcomes: {remediation_response}
     
-    Write the Markdown report and save it to GCS.
+    Use your reporting skills (`postmortem-generator`, `postmortem-documentation`) to compile the report, call `upload_postmortem_report` to save it to GCS (`gs://{TELEMETRY_BUCKET}/reports/`), and return the complete report and gs:// URI.
     """
     
     reporting_response = await run_agent_locally(incident_report_writer, reporting_prompt, f"rep-{session_id}")
-    log_step("incident_report_writer", f"Post-mortem report compiled and archived:\n{reporting_response}", "33")
+    
+    # Guarantee archival to GCS if agent hasn't already saved it
+    gcs_uri = None
+    if "gs://" in reporting_response:
+        import re
+        match = re.search(r"gs://[^\s\)`'\"]+", reporting_response)
+        if match:
+            gcs_uri = match.group(0)
+    if not gcs_uri:
+        gcs_uri = save_postmortem_to_gcs(content=reporting_response, incident_id=f"INC-{session_id[:8]}")
+        
+    log_step("incident_report_writer", f"Post-mortem report compiled:\n{reporting_response}", "33")
+    log_step("Supervisor", f"✅ Post-mortem report archived to GCS: {gcs_uri}", "32")
 
     print("=" * 75)
     print("SRE SUPERVISOR SESSION COMPLETED SUCCESSFULLY.")

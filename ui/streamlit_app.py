@@ -27,7 +27,17 @@ if str(ROOT_DIR) not in sys.path:
 
 load_dotenv(ROOT_DIR / ".env")
 
-from app.config import PROJECT_ID, GEMINI_LOCATION, GKE_CLUSTER_NAME, GKE_CLUSTER_REGION, GEMINI_MODEL
+from app.config import (
+    PROJECT_ID,
+    GEMINI_LOCATION,
+    GKE_CLUSTER_NAME,
+    GKE_CLUSTER_REGION,
+    GEMINI_MODEL,
+    TELEMETRY_BUCKET,
+    save_postmortem_to_gcs,
+    list_gcs_files,
+    read_gcs_file
+)
 
 # =========================================================================
 # 1. PAGE SETUP & MINIMALIST STYLING
@@ -114,6 +124,8 @@ if "pending_approval" not in st.session_state:
     st.session_state.pending_approval = None
 if "postmortem_report" not in st.session_state:
     st.session_state.postmortem_report = None
+if "postmortem_gcs_uri" not in st.session_state:
+    st.session_state.postmortem_gcs_uri = None
 if "async_report_id" not in st.session_state:
     st.session_state.async_report_id = None
 if "session_id" not in st.session_state:
@@ -127,11 +139,12 @@ import time
 
 _ASYNC_REPORTS_STORE = {}
 
-def trigger_async_postmortem(report_key: str, incident_details: str):
-    """Launches an asynchronous background thread to generate postmortem reports without blocking UI investigations."""
+def trigger_async_postmortem(report_key: str, incident_details: str, incident_id: str = None):
+    """Launches an asynchronous background thread to generate postmortem reports and archive them to the GCS telemetry bucket."""
     _ASYNC_REPORTS_STORE[report_key] = {
         "status": "IN_PROGRESS ⏳",
         "content": None,
+        "gcs_uri": None,
         "timestamp": time.strftime("%H:%M:%S")
     }
     
@@ -157,15 +170,22 @@ def trigger_async_postmortem(report_key: str, incident_details: str):
                 return "".join(chunks)
             
             report_text = asyncio.run(run_writer())
+            
+            # Archive directly to GCS telemetry bucket
+            inc_id = incident_id or f"INC-{time.strftime('%Y%m%d_%H%M%S')}_{report_key[:6]}"
+            gcs_uri = save_postmortem_to_gcs(report_text, incident_id=inc_id)
+            
             _ASYNC_REPORTS_STORE[report_key] = {
                 "status": "SUCCESS ✅",
                 "content": report_text,
+                "gcs_uri": gcs_uri,
                 "timestamp": time.strftime("%H:%M:%S")
             }
         except Exception as e:
             _ASYNC_REPORTS_STORE[report_key] = {
                 "status": "FAILED ❌",
                 "content": f"Failed to generate async postmortem report: {str(e)}",
+                "gcs_uri": None,
                 "timestamp": time.strftime("%H:%M:%S")
             }
             
@@ -460,7 +480,12 @@ with tab_ops:
                 st.rerun()
             else:
                 with st.chat_message("assistant"):
-                    with st.spinner("NovaSRE AI Companion is inspecting telemetry and loading diagnostic skills..."):
+                    spinner_msg = (
+                        "NovaSRE AI Companion is compiling post-mortem documentation..."
+                        if any(w in latest_prompt.lower() for w in ["postmortem", "post-mortem", "report", "incident doc"])
+                        else "NovaSRE AI Companion is inspecting telemetry and loading diagnostic skills..."
+                    )
+                    with st.spinner(spinner_msg):
                         agent_name = "rca-telemetry-expert"
                         urn_env = "INVESTIGATOR_AGENT_URN"
                         local_agent_func = lambda: getattr(importlib.import_module("app.investigator_agent"), "rca_telemetry_expert")
@@ -509,13 +534,29 @@ with tab_ops:
                         st.markdown(ai_reply, unsafe_allow_html=True)
                         st.session_state.messages.append({"role": "assistant", "content": ai_reply})
                         
-                        # Automatically trigger async background post-mortem generation for investigations without blocking UI
-                        if len(latest_prompt.strip()) > 5:
+                        # Automatically trigger async background post-mortem generation for every remediated issue or investigation
+                        is_auto_remediated = any(k in ai_reply.lower() for k in [
+                            "remediation_status: \"success\"", "remediation_status\": \"success\"", 
+                            "remediation-executor", "remediation_executor", "auto-recovery", 
+                            "auto-rollback", "scaled deployment", "reverted gke deployment", 
+                            "recovery action approved & executed", "successfully scaled", 
+                            "successfully rolled back", "tier 1 auto-recovery", "tier 1 auto-rollback"
+                        ])
+                        
+                        if is_auto_remediated:
                             report_key = str(uuid.uuid4())
                             st.session_state.async_report_id = report_key
                             trigger_async_postmortem(
                                 report_key,
-                                f"SRE Investigation completed for query: '{latest_prompt}'. Diagnostic evidence & AI response:\n{ai_reply}\n\nUse your reporting skills (`postmortem-generator`, `postmortem-aggregator`) to format and compile an executive investigation audit report."
+                                f"Autonomous Remediation executed for alert: '{st.session_state.active_alert}'. Diagnostic findings & auto-remediation brief:\n{ai_reply}\n\nUse your post-mortem reporting skills (`postmortem-generator`, `postmortem-documentation`) to compile the full incident report and archive it to GCS bucket '{TELEMETRY_BUCKET}'."
+                            )
+                            st.toast("⚡ Auto-Remediation executed & Post-Mortem actively compiling to GCS!", icon="📝")
+                        elif len(latest_prompt.strip()) > 5:
+                            report_key = str(uuid.uuid4())
+                            st.session_state.async_report_id = report_key
+                            trigger_async_postmortem(
+                                report_key,
+                                f"SRE Investigation completed for query: '{latest_prompt}'. Diagnostic evidence & AI response:\n{ai_reply}\n\nUse your reporting skills (`postmortem-generator`, `postmortem-aggregator`, `postmortem-documentation`) to format, compile, and archive an executive incident post-mortem report to GCS bucket '{TELEMETRY_BUCKET}'."
                             )
                             st.toast("⏳ Async Post-Mortem generator started in the background!", icon="⚡")
                     
@@ -634,19 +675,24 @@ with tab_releases:
     """)
 
 with tab_report:
-    st.subheader("📄 Incident Post-Mortem Documentation (Async Generator)")
+    st.subheader("📄 Incident Post-Mortem Documentation & GCS Archive")
+    st.caption(f"Post-mortems are automatically compiled after remediation and stored in Google Cloud Storage (`gs://{TELEMETRY_BUCKET}/reports/`).")
+    
     report_key = st.session_state.get("async_report_id")
     if report_key and report_key in _ASYNC_REPORTS_STORE:
         rep_data = _ASYNC_REPORTS_STORE[report_key]
         status = rep_data.get("status", "UNKNOWN")
         timestamp = rep_data.get("timestamp", "")
+        gcs_uri = rep_data.get("gcs_uri")
         
         col1, col2 = st.columns([4, 1])
         with col1:
             if "IN_PROGRESS" in status:
-                st.info(f"⏳ **Async Post-Mortem Generator Status:** `{status}` (Started at {timestamp})\n\n*The report is actively compiling in the background via `incident_report_writer`. You can safely switch back to the Chat tab and initiate new investigations!*")
+                st.info(f"⏳ **Async Post-Mortem Generator Status:** `{status}` (Started at {timestamp})\n\n*The report is actively compiling in the background via `incident_report_writer` and archiving to GCS. You can safely switch back to the Chat tab and initiate new investigations!*")
             elif "SUCCESS" in status:
                 st.success(f"✅ **Async Post-Mortem Generator Status:** `{status}` (Completed at {timestamp})")
+                if gcs_uri:
+                    st.markdown(f"📦 **GCS Archival Location:** ` {gcs_uri} `")
             else:
                 st.error(f"❌ **Async Post-Mortem Generator Status:** `{status}`\n\nDetails: {rep_data.get('content', '')}")
         with col2:
@@ -654,9 +700,50 @@ with tab_report:
                 st.rerun()
                 
         if rep_data.get("content") and "SUCCESS" in status:
+            content_text = rep_data["content"]
+            st.download_button(
+                label="📥 Download Post-Mortem Markdown",
+                data=content_text,
+                file_name=f"post_mortem_{report_key[:8]}.md",
+                mime="text/markdown"
+            )
             st.markdown("---")
-            st.markdown(rep_data["content"], unsafe_allow_html=True)
+            st.markdown(content_text, unsafe_allow_html=True)
     elif st.session_state.get("postmortem_report"):
         st.markdown(st.session_state.postmortem_report, unsafe_allow_html=True)
     else:
-        st.info("No compiled report for the current session yet. Reports generate automatically in the background as an asynchronous task whenever an investigation or HITL remediation is performed in the UI.")
+        st.info("No compiled report for the active session yet. Reports generate automatically in the background as an asynchronous task whenever remediation or investigation is performed.")
+
+    # =========================================================================
+    # GCS BUCKET POST-MORTEM ARCHIVE EXPLORER
+    # =========================================================================
+    st.markdown("---")
+    st.subheader(f"🗄️ GCS Bucket Incident Archive (`gs://{TELEMETRY_BUCKET}/reports/`)")
+    
+    col_arch_header, col_arch_btn = st.columns([4, 1])
+    with col_arch_header:
+        st.caption("Live directory of publication-ready incident reports stored in your Google Cloud Storage telemetry bucket.")
+    with col_arch_btn:
+        refresh_archive = st.button("🔄 Refresh GCS Archive", use_container_width=True)
+        
+    gcs_items = list_gcs_files(TELEMETRY_BUCKET, prefix="reports/")
+    if gcs_items:
+        # Filter markdown files
+        md_files = [it for it in gcs_items if it.get("name", "").endswith(".md")]
+        if md_files:
+            file_options = {it.get("name"): f"📄 {it.get('name')} (Size: {it.get('size', 0)}B | Updated: {it.get('updated', '')[:19]})" for it in md_files}
+            selected_file = st.selectbox(
+                "Select an archived post-mortem report to inspect:",
+                options=list(file_options.keys()),
+                format_func=lambda x: file_options.get(x, x)
+            )
+            
+            if selected_file:
+                st.markdown(f"**Viewing Archived GCS Document:** `gs://{TELEMETRY_BUCKET}/{selected_file}`")
+                file_content = read_gcs_file(TELEMETRY_BUCKET, selected_file)
+                with st.expander("📖 Post-Mortem Content Preview", expanded=True):
+                    st.markdown(file_content, unsafe_allow_html=True)
+        else:
+            st.write("No markdown reports found under `reports/` in GCS.")
+    else:
+        st.info(f"No archived reports found in `gs://{TELEMETRY_BUCKET}/reports/` yet.")

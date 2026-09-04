@@ -309,3 +309,97 @@ GKE_MCP_SERVER = os.environ.get("GKE_MCP_URL", "https://container.googleapis.com
 COMPUTE_MCP_SERVER = os.environ.get("COMPUTE_MCP_URL", "https://compute.googleapis.com/mcp")
 GCS_MCP_SERVER = os.environ.get("GCS_MCP_URL", "https://storage.googleapis.com/mcp")
 BQ_MCP_SERVER = os.environ.get("BQ_MCP_URL", "https://bigquery.googleapis.com/mcp")
+
+# Centralized GCS Telemetry & Report Bucket
+TELEMETRY_BUCKET = os.environ.get(
+    "TELEMETRY_BUCKET",
+    os.environ.get("STAGING_BUCKET", f"{PROJECT_ID}-telemetry")
+).replace("gs://", "").strip().rstrip("/")
+
+
+# =========================================================================
+# 4. GCS TELEMETRY STORAGE & POSTMORTEM ARCHIVAL HELPERS
+# =========================================================================
+def upload_gcs_file(bucket_name: str, object_name: str, content: str, content_type: str = "text/markdown") -> str:
+    """Uploads string content directly to a Google Cloud Storage bucket via GCS REST API with OAuth token."""
+    clean_bucket = (bucket_name or TELEMETRY_BUCKET).replace("gs://", "").strip().rstrip("/")
+    clean_obj = object_name.lstrip("/")
+    try:
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        credentials.refresh(google.auth.transport.requests.Request())
+        headers = {
+            "Authorization": f"Bearer {credentials.token}",
+            "Content-Type": content_type
+        }
+        url = f"https://storage.googleapis.com/upload/storage/v1/b/{clean_bucket}/o?uploadType=media&name={clean_obj}"
+        import requests
+        resp = requests.post(url, headers=headers, data=content.encode("utf-8"), timeout=30)
+        if resp.status_code in [200, 201]:
+            logger.info(f"✅ Successfully archived file to GCS: gs://{clean_bucket}/{clean_obj}")
+            return f"gs://{clean_bucket}/{clean_obj}"
+        else:
+            err_msg = f"Failed to upload to GCS ({resp.status_code}): {resp.text}"
+            logger.warning(err_msg)
+            return f"UPLOAD_ERROR: {err_msg}"
+    except Exception as e:
+        logger.error(f"❌ Exception uploading to GCS gs://{clean_bucket}/{clean_obj}: {e}")
+        return f"UPLOAD_ERROR: {str(e)}"
+
+
+def list_gcs_files(bucket_name: str = None, prefix: str = "reports/") -> list:
+    """Lists files from a GCS bucket matching a prefix."""
+    target_bucket = (bucket_name or TELEMETRY_BUCKET).replace("gs://", "").strip().rstrip("/")
+    try:
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        credentials.refresh(google.auth.transport.requests.Request())
+        headers = {
+            "Authorization": f"Bearer {credentials.token}"
+        }
+        url = f"https://storage.googleapis.com/storage/v1/b/{target_bucket}/o?prefix={prefix}"
+        import requests
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            items = resp.json().get("items", [])
+            return items
+        return []
+    except Exception as e:
+        logger.warning(f"Failed to list GCS files in gs://{target_bucket}/{prefix}: {e}")
+        return []
+
+
+def read_gcs_file(bucket_name: str, object_name: str) -> str:
+    """Reads the text content of a file from GCS."""
+    clean_bucket = (bucket_name or TELEMETRY_BUCKET).replace("gs://", "").strip().rstrip("/")
+    clean_obj = object_name.lstrip("/")
+    try:
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        credentials.refresh(google.auth.transport.requests.Request())
+        headers = {
+            "Authorization": f"Bearer {credentials.token}"
+        }
+        import urllib.parse
+        encoded_obj = urllib.parse.quote(clean_obj, safe="")
+        url = f"https://storage.googleapis.com/storage/v1/b/{clean_bucket}/o/{encoded_obj}?alt=media"
+        import requests
+        resp = requests.get(url, headers=headers, timeout=20)
+        if resp.status_code == 200:
+            return resp.text
+        return f"ERROR: Failed to read file from GCS ({resp.status_code}): {resp.text}"
+    except Exception as e:
+        return f"ERROR: Exception reading from GCS: {str(e)}"
+
+
+def save_postmortem_to_gcs(content: str, incident_id: str = None, bucket_name: str = None) -> str:
+    """Convenience helper to save a postmortem Markdown document directly to the telemetry GCS bucket under reports/."""
+    from datetime import datetime, timezone
+    import uuid
+    target_bucket = (bucket_name or TELEMETRY_BUCKET).replace("gs://", "").strip().rstrip("/")
+    if not incident_id:
+        ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        inc_id = f"INC-{ts_str}_{str(uuid.uuid4())[:6]}"
+    else:
+        inc_id = incident_id.replace(" ", "_").replace("/", "_").replace(":", "_")
+        
+    object_name = f"reports/post_mortem_{inc_id}.md"
+    return upload_gcs_file(target_bucket, object_name, content, content_type="text/markdown")
+

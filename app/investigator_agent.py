@@ -39,6 +39,11 @@ from app.config import (
     COMPUTE_MCP_SERVER,
     GCS_MCP_SERVER,
     BQ_MCP_SERVER,
+    TELEMETRY_BUCKET,
+    upload_gcs_file,
+    list_gcs_files,
+    read_gcs_file,
+    save_postmortem_to_gcs,
     get_mcp_toolset
 )
 
@@ -98,9 +103,13 @@ class FilteringLazyToolset(BaseToolset):
             "list_tables",
             "get_table",
             "list_datasets",
-            # Universal GCS OneMCP object inspection tools (for dynamic playbook loading)
+            # Universal GCS OneMCP object inspection and write tools
             "list_objects",
-            "get_object"
+            "get_object",
+            "write_gcs_file",
+            "upload_object",
+            "create_object",
+            "put_object"
         }
         
         filtered_tools = []
@@ -178,16 +187,19 @@ You are the SRE RCA Telemetry Expert (rca_telemetry_expert), an elite autonomous
    * Strictly execute the domain categorization rules defined inside `investigation-entrypoint` to dynamically invoke the appropriate domain specialist skills (e.g., networking, workloads, tracing, error reporting) required for detailed root-cause analysis.
    * Never generate Python code blocks — invoke tools directly via standard tool calling.
 
-3. **Step 3: Load Recovery Playbook & Execute (Tier 1 Auto-Recovery & Tier 2 Playbook HITL)**:
+3. **Step 3: Load Recovery Playbook, Execute & Trigger Post-Mortem (Tier 1 Auto-Recovery & Tier 2 Playbook HITL)**:
    Once your diagnostic skill inspection confirms the specific failure state, load the corresponding SRE playbook:
-   * **Playbook 1 (`gke-scale-recovery`)**: If `readyReplicas = 0` on `frontend` (or any deployment), invoke `load_skill(skill_name="gke-scale-recovery")` and automatically invoke `remediation_executor_remote` with parameter `request="scale deployment frontend in namespace default to 1 replica in cluster online-boutique in region us-central1"` (`Tier 1 Auto-Recovery`).
-   * **Playbook 2 (`gke-crashloop-rollback`)**: If `cartservice` container rollout fails (`CrashLoopBackOff` / `ErrImagePull`), invoke `load_skill(skill_name="gke-crashloop-rollback")` and automatically invoke `remediation_executor_remote` with parameter `request="Revert GKE Deployment 'cartservice' in namespace 'default' in cluster 'online-boutique' in region 'us-central1' to its previous stable container image revision (gcr.io/google-samples/microservices-demo/cartservice:v1.0.4) and verify replacement pods transition to a healthy Ready state."` (`Tier 1 Auto-Recovery`).
+   * **Playbook 1 (`gke-scale-recovery`)**: If `readyReplicas = 0` on `frontend` (or any deployment), invoke `load_skill(skill_name="gke-scale-recovery")` and automatically invoke `remediation_executor_remote` with parameter `request="scale deployment frontend in namespace default to 1 replica in cluster online-boutique in region us-central1"` (`Tier 1 Auto-Recovery`). Upon successful recovery, compile the incident postmortem report and invoke `upload_postmortem_report` to archive it to GCS (`gs://{TELEMETRY_BUCKET}/reports/`).
+   * **Playbook 2 (`gke-crashloop-rollback`)**: If `cartservice` container rollout fails (`CrashLoopBackOff` / `ErrImagePull`), invoke `load_skill(skill_name="gke-crashloop-rollback")` and automatically invoke `remediation_executor_remote` with parameter `request="Revert GKE Deployment 'cartservice' in namespace 'default' in cluster 'online-boutique' in region 'us-central1' to its previous stable container image revision (gcr.io/google-samples/microservices-demo/cartservice:v1.0.4) and verify replacement pods transition to a healthy Ready state."` (`Tier 1 Auto-Recovery`). Upon successful recovery, compile the incident postmortem report and invoke `upload_postmortem_report` to archive it to GCS (`gs://{TELEMETRY_BUCKET}/reports/`).
    * **Playbook 3 (`gke-pod-restart`)**: If `redis-cart` database locks or pod termination occur, invoke `load_skill(skill_name="gke-pod-restart")` and present the recommended pod restart plan to the human operator under `Tier 2 (HITL Approval Required)`.
    * **Playbook 4 (`gke-horizontal-upsize`)**: If `paymentservice` transaction latency (>2000ms) or capacity bottleneck occurs, invoke `load_skill(skill_name="gke-horizontal-upsize")` and present the recommended horizontal upsize plan (`scale deployment paymentservice in namespace default to 3 replicas`) to the human operator under `Tier 2 (HITL Approval Required)`.
    * **Playbook 5 (`gke-service-routing-recovery`)**: If GKE service routing to a microservice is broken due to incorrect service selectors, invoke `load_skill(skill_name="gke-service-routing-recovery")` and present the recommended selector restoration plan under `Tier 2 (HITL Approval Required)`.
    * **Playbook 6 (`gke-dns-recovery`)**: If CoreDNS domain resolution failures occur, invoke `load_skill(skill_name="gke-dns-recovery")` and present the recommended CoreDNS recovery plan under `Tier 2 (HITL Approval Required)`.
    * **Playbook 7 (`gke-network-firewall-recovery`)**: If firewall rules or NetworkPolicies block required traffic, invoke `load_skill(skill_name="gke-network-firewall-recovery")` and present the recommended firewall remediation plan under `Tier 2 (HITL Approval Required)`.
    * **Playbook 8 (`gcp-nat-port-recovery`)**: If Cloud NAT SNAT port exhaustion occurs, invoke `load_skill(skill_name="gcp-nat-port-recovery")` and present the recommended port scaling plan under `Tier 2 (HITL Approval Required)`.
+
+**Mandatory Post-Remediation Post-Mortem Policy**:
+For EVERY issue that undergoes remediation (including automated Tier 1 auto-recovery as well as operator-approved Tier 2/3 remediation), postmortem documentation generation MUST be performed and archived to GCS. When auto-remediation completes, compile the post-mortem summary and archive it into the telemetry bucket `gs://{TELEMETRY_BUCKET}/reports/post_mortem_<INCIDENT_ID>.md` using `upload_postmortem_report`.
 
 4. **Step 4: Consult Developer Knowledge (Tier 2 - Dynamic RAG - HITL Required)**:
    If no matching local playbook is found under Step 3, search the `gcp_developer_knowledge` MCP server (if available) to retrieve the relevant guide.
@@ -430,6 +442,45 @@ def list_kubernetes_resources(resource_type: str = "pods", namespace: str = "def
     except Exception as e:
         return f"Execution failed across kubernetes inspection: {str(e)}"
 
+def write_gcs_file(bucket_name: str = "", file_path: str = "", content: str = "") -> str:
+    """Writes or archives a file (such as a postmortem Markdown report) directly to Google Cloud Storage (GCS).
+
+    Args:
+        bucket_name: The GCS bucket name (defaults to telemetry bucket if omitted).
+        file_path: The target object path in GCS (e.g. 'reports/post_mortem_INC-123.md').
+        content: The Markdown or text content to store in GCS.
+
+    Returns:
+        The gs:// URI of the archived file or an error message.
+    """
+    target_bucket = bucket_name or TELEMETRY_BUCKET
+    return upload_gcs_file(target_bucket, file_path, content, content_type="text/markdown")
+
+def upload_postmortem_report(incident_id: str, content: str) -> str:
+    """Uploads and archives an incident post-mortem Markdown report directly to the central GCS telemetry bucket.
+
+    Args:
+        incident_id: The unique incident identifier (e.g. 'INC-20260903_001' or alert name).
+        content: The complete Markdown post-mortem document.
+
+    Returns:
+        The gs:// URI where the postmortem report was saved in GCS.
+    """
+    return save_postmortem_to_gcs(content=content, incident_id=incident_id)
+
+def list_gcs_reports(prefix: str = "reports/") -> str:
+    """Lists archived post-mortem reports stored in the GCS telemetry bucket.
+
+    Args:
+        prefix: The folder prefix in GCS (default: 'reports/').
+
+    Returns:
+        A JSON string with the list of archived postmortem reports in GCS.
+    """
+    import json
+    files = list_gcs_files(TELEMETRY_BUCKET, prefix=prefix)
+    return json.dumps(files, indent=2)
+
 _rca_tools = [
     FilteringLazyToolset(lambda: get_mcp_toolset(LOGGING_MCP_SERVER)),
     FilteringLazyToolset(lambda: get_mcp_toolset(MONITORING_MCP_SERVER)),
@@ -441,6 +492,9 @@ _rca_tools = [
     FilteringLazyToolset(lambda: get_mcp_toolset(GCS_MCP_SERVER)),
     skill_toolset.SkillToolset(skills=_RCA_SKILLS),
     remediation_executor_remote,
+    upload_postmortem_report,
+    write_gcs_file,
+    list_gcs_reports,
     get_current_utc_time,
     utcnow,
     list_kubernetes_resources
@@ -463,23 +517,29 @@ You are the SRE Incident Report Writer (incident_report_writer), an autonomous a
 
 **Persona:** Highly analytical, clear, and structured. 📝🔍
 **Target Project:** Always operate within the project `{PROJECT_ID}`.
+**Target GCS Telemetry Bucket:** `gs://{TELEMETRY_BUCKET}/reports/`
 
 **Your Job:**
-Given diagnostic investigation details or HITL remediation execution outcomes, compile a comprehensive, highly styled Markdown post-mortem report or investigation summary, and archive it to GCS.
+Given diagnostic investigation details or remediation execution outcomes (both autonomous auto-recovery and HITL-approved remediations), compile a comprehensive, publication-ready Markdown post-mortem report and archive it to GCS using `upload_postmortem_report` or `write_gcs_file`.
 
 **Operating Principles & Reporting Skill Usage:**
-1. **Leverage Reporting Skills:** When generating reports for investigations or HITL remediations, ALWAYS load and follow your post-mortem skills:
+1. **Leverage Reporting Skills:** When generating reports for any incident remediation or investigation, ALWAYS load and follow your post-mortem skills:
    - **`postmortem-generator`**: Use to construct rigorous, standardized postmortem documents with timeline reconstruction, root cause analysis, and actionable remediation items.
    - **`postmortem-documentation`**: Use for premium GitHub-style markdown formatting and visual structure.
    - **`postmortem-aggregator`**: Use when synthesizing diagnostic findings from across multiple OneMCP tools, logs, metrics, or previous events.
 2. **Premium Markdown Structure:** Build clear reports with incident metadata blocks (`> [!IMPORTANT]`), clean comparison tables, and structured JSON SRE fact blocks at the conclusion.
-3. **Archive Documentation:** Use your GCS tools to save the compiled report to Cloud Storage under a unique, timestamped path.
-4. **Output Format:** Return the complete compiled Markdown report in your final output along with confirmation of archival.
+3. **Mandatory GCS Archival:** You MUST call `upload_postmortem_report(incident_id=..., content=...)` or `write_gcs_file(bucket_name="{TELEMETRY_BUCKET}", file_path="reports/post_mortem_<INCIDENT_ID>.md", content=...)` to save the compiled Markdown report to Cloud Storage.
+4. **Output Format:** Return the complete compiled Markdown report in your final output along with the exact `gs://` URI confirmation of archival.
 """
 
 _reporting_tools = [
     FilteringLazyToolset(lambda: get_mcp_toolset(GCS_MCP_SERVER)),
-    skill_toolset.SkillToolset(skills=_REPORTING_SKILLS)
+    skill_toolset.SkillToolset(skills=_REPORTING_SKILLS),
+    upload_postmortem_report,
+    write_gcs_file,
+    list_gcs_reports,
+    get_current_utc_time,
+    utcnow
 ]
 
 incident_report_writer = Agent(
