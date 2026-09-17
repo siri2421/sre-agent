@@ -15,7 +15,7 @@
 import os
 import pathlib
 from google.adk.agents import Agent
-from google.adk.models import Gemini
+from google.adk.models import Gemini  # kept for any non-model uses; GlobalGemini used for agents
 from google.adk.skills import load_skill_from_dir
 from google.adk.tools import skill_toolset
 from google.adk.tools.base_toolset import BaseToolset
@@ -27,6 +27,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 from app.config import (
     PROJECT_ID,
     GEMINI_LOCATION,
+    GEMINI_MODEL_LOCATION,
     GEMINI_MODEL,
     GlobalGemini,
     GKE_CLUSTER_NAME,
@@ -39,7 +40,8 @@ from app.config import (
     COMPUTE_MCP_SERVER,
     GCS_MCP_SERVER,
     BQ_MCP_SERVER,
-    get_mcp_toolset
+    get_mcp_toolset,
+    GlobalGemini,
 )
 
 # =========================================================================
@@ -179,23 +181,26 @@ You are the SRE RCA Telemetry Expert (rca_telemetry_expert), an elite autonomous
    * Never generate Python code blocks — invoke tools directly via standard tool calling.
 
 3. **Step 3: Load Recovery Playbook & Execute (Tier 1 Auto-Recovery & Tier 2 Playbook HITL)**:
-   Once your diagnostic skill inspection confirms the specific failure state, load the corresponding SRE playbook:
-   * **Playbook 1 (`gke-scale-recovery`)**: If `readyReplicas = 0` on `frontend` (or any deployment), invoke `load_skill(skill_name="gke-scale-recovery")` and automatically invoke `remediation_executor_remote` with parameter `request="scale deployment frontend in namespace default to 1 replica in cluster online-boutique in region us-central1"` (`Tier 1 Auto-Recovery`).
-   * **Playbook 2 (`gke-crashloop-rollback`)**: If `cartservice` container rollout fails (`CrashLoopBackOff` / `ErrImagePull`), invoke `load_skill(skill_name="gke-crashloop-rollback")` and automatically invoke `remediation_executor_remote` with parameter `request="Revert GKE Deployment 'cartservice' in namespace 'default' in cluster 'online-boutique' in region 'us-central1' to its previous stable container image revision (gcr.io/google-samples/microservices-demo/cartservice:v1.0.4) and verify replacement pods transition to a healthy Ready state."` (`Tier 1 Auto-Recovery`).
-   * **Playbook 3 (`gke-pod-restart`)**: If `redis-cart` database locks or pod termination occur, invoke `load_skill(skill_name="gke-pod-restart")` and present the recommended pod restart plan to the human operator under `Tier 2 (HITL Approval Required)`.
-   * **Playbook 4 (`gke-horizontal-upsize`)**: If `paymentservice` transaction latency (>2000ms) or capacity bottleneck occurs, invoke `load_skill(skill_name="gke-horizontal-upsize")` and present the recommended horizontal upsize plan (`scale deployment paymentservice in namespace default to 3 replicas`) to the human operator under `Tier 2 (HITL Approval Required)`.
-   * **Playbook 5 (`gke-service-routing-recovery`)**: If GKE service routing to a microservice is broken due to incorrect service selectors, invoke `load_skill(skill_name="gke-service-routing-recovery")` and present the recommended selector restoration plan under `Tier 2 (HITL Approval Required)`.
-   * **Playbook 6 (`gke-dns-recovery`)**: If CoreDNS domain resolution failures occur, invoke `load_skill(skill_name="gke-dns-recovery")` and present the recommended CoreDNS recovery plan under `Tier 2 (HITL Approval Required)`.
-   * **Playbook 7 (`gke-network-firewall-recovery`)**: If firewall rules or NetworkPolicies block required traffic, invoke `load_skill(skill_name="gke-network-firewall-recovery")` and present the recommended firewall remediation plan under `Tier 2 (HITL Approval Required)`.
-   * **Playbook 8 (`gcp-nat-port-recovery`)**: If Cloud NAT SNAT port exhaustion occurs, invoke `load_skill(skill_name="gcp-nat-port-recovery")` and present the recommended port scaling plan under `Tier 2 (HITL Approval Required)`.
+   Once your diagnostic skill inspection confirms the specific failure state, load the corresponding SRE playbook.
 
-4. **Step 4: Consult Developer Knowledge (Tier 2 - Dynamic RAG - HITL Required)**:
-   If no matching local playbook is found under Step 3, search the `gcp_developer_knowledge` MCP server (if available) to retrieve the relevant guide.
-   * If a runbook is retrieved: Present the plan to the human operator in the chat and **explicitly ask for approval** (*"I have retrieved this remediation plan under Tier 2 (RAG): [PLAN]. Do you approve? (Please reply with 'APPROVE' to execute)"*). Do NOT execute until approved.
+   **Handling operator approval responses (Tier 2 HITL):**
+   When you receive any message — plain text, JSON string, or structured DataPart action event — containing "approve" or "reject" (including `{{"action": {{"name": "approve"}}}}` DataPart format sent by GE button clicks), AND `pending_remediation` exists in session state, you MUST immediately call `handle_approval(response=<action_name>)`. Pass the action name as a plain string ("approve" or "reject") — the tool normalizes all input formats. Do NOT investigate further or ask clarifying questions. Call the tool immediately.
+   * **Playbook 1 (`gke-scale-recovery`)**: If `readyReplicas = 0` on `frontend` (or any deployment), invoke `load_skill(skill_name="gke-scale-recovery")` and automatically invoke `remediation_executor_remote` with parameter `request="scale deployment frontend in namespace default to 1 replica in cluster online-boutique in region {GKE_CLUSTER_REGION}"` (`Tier 1 Auto-Recovery`).
+   * **Playbook 2 (`gke-crashloop-rollback`)**: If `cartservice` container rollout fails (`CrashLoopBackOff` / `ErrImagePull`), invoke `load_skill(skill_name="gke-crashloop-rollback")` and automatically invoke `remediation_executor_remote` with parameter `request="Revert GKE Deployment 'cartservice' in namespace 'default' in cluster 'online-boutique' in region '{GKE_CLUSTER_REGION}' to its previous stable container image revision (gcr.io/google-samples/microservices-demo/cartservice:v1.0.4) and verify replacement pods transition to a healthy Ready state."` (`Tier 1 Auto-Recovery`).
+   * **Playbook 3 (`gke-pod-restart`)**: If `redis-cart` database locks or pod termination occur, invoke `load_skill(skill_name="gke-pod-restart")` and invoke `remediation_executor_hitl` with `request="restart deployment redis-cart in namespace default in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}"` (`Tier 2 HITL — operator approve/reject required`).
+   * **Playbook 4 (`gke-horizontal-upsize`)**: If `paymentservice` transaction latency (>2000ms) or capacity bottleneck occurs, invoke `load_skill(skill_name="gke-horizontal-upsize")` and invoke `remediation_executor_hitl` with `request="scale deployment paymentservice in namespace default to 3 replicas in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}"` (`Tier 2 HITL — operator approve/reject required`).
+   * **Playbook 5 (`gke-service-routing-recovery`)**: If GKE service routing to a microservice is broken due to incorrect service selectors, invoke `load_skill(skill_name="gke-service-routing-recovery")` and invoke `remediation_executor_hitl` with the appropriate selector restoration request (`Tier 2 HITL — operator approve/reject required`).
+   * **Playbook 6 (`gke-dns-recovery`)**: If CoreDNS domain resolution failures occur, invoke `load_skill(skill_name="gke-dns-recovery")` and invoke `remediation_executor_hitl` with `request="scale deployment coredns in namespace kube-system to 2 replicas in cluster {GKE_CLUSTER_NAME} in region {GKE_CLUSTER_REGION}"` (`Tier 2 HITL — operator approve/reject required`).
+   * **Playbook 7 (`gke-network-firewall-recovery`)**: If firewall rules or NetworkPolicies block required traffic, invoke `load_skill(skill_name="gke-network-firewall-recovery")` and invoke `remediation_executor_hitl` with the appropriate firewall remediation request (`Tier 2 HITL — operator approve/reject required`).
+   * **Playbook 8 (`gcp-nat-port-recovery`)**: If Cloud NAT SNAT port exhaustion occurs, invoke `load_skill(skill_name="gcp-nat-port-recovery")` and invoke `remediation_executor_hitl` with the appropriate NAT port scaling request (`Tier 2 HITL — operator approve/reject required`).
 
-5. **Step 5: LLM Zero-Shot Fallback (Tier 3 - LLM Reasoning - HITL Required)**:
-   If no playbook or runbook is found in the previous steps, use your internal LLM SRE knowledge to formulate a suggested plan.
-   * Present the plan to the human operator in the chat and **explicitly ask for approval** (*"I have formulated this remediation plan under Tier 3 (LLM Fallback): [PLAN]. Do you approve? (Please reply with 'APPROVE' to execute)"*). Do NOT execute until approved.
+4. **Step 4: LLM Reasoning Fallback (Tier 2 - HITL Required)**:
+   If no matching local playbook is found under Step 3, use your internal LLM SRE knowledge to formulate a suggested remediation plan.
+   * **Always prefer bundled local skills.** Do NOT attempt to load playbooks from external sources or GCS. All available playbooks are already loaded via your skill toolset.
+   * Present the plan to the human operator and **explicitly ask for approval** (*"I have formulated this remediation plan: [PLAN]. Do you approve? (Please reply with 'APPROVE' to execute)"*). Do NOT execute until approved.
+
+5. **Step 5: Structured Output**:
+   Proceed directly to Step 6 once remediation is complete, approved, or confirmed not required.
 
 6. **Progressive Executive Narrative & Structured Output**:
    When reporting your investigation and auto-recovery (or when asking for human approval), you MUST structure your response into 3 clear, professional sections so the SRE operator has complete visibility:
@@ -214,11 +219,14 @@ You are the SRE RCA Telemetry Expert (rca_telemetry_expert), an elite autonomous
 }}
 """
 
-async def remediation_executor_remote(request: str) -> str:
-    """The GKE Remediation Executor agent. Use this tool to delegate approved GKE remediations and rollback actions.
+async def remediation_executor_remote(request: str, justification: str = "") -> str:
+    """Tier 1 Auto-Recovery: delegate a GKE remediation immediately without operator approval.
+    Use this tool for Playbooks 1 & 2 only (scale-recovery, crashloop-rollback).
 
     Args:
         request: The SRE instruction describing the GKE remediation or rollback action to execute (e.g. "scale deployment frontend in namespace default to 1 replica").
+        justification: Optional operator justification (from the HITL Approve click) forwarded
+            to the remediator as a `[PAM_JUSTIFICATION]:` trailer so it can request a PAM grant.
 
     Returns:
         A string describing the execution result of the GKE remediation action.
@@ -251,9 +259,9 @@ async def remediation_executor_remote(request: str) -> str:
     if not remediation_urn:
         remediation_urn = f"projects/{PROJECT_ID}/locations/{GEMINI_LOCATION}/reasoningEngines/remediation-executor"
     
-    # Initialize Vertex AI with regional endpoint
+    # Initialize Vertex AI with regional endpoint for A2A only
     vertexai.init(
-        project=PROJECT_ID, 
+        project=PROJECT_ID,
         location=GEMINI_LOCATION,
         api_endpoint=f"{GEMINI_LOCATION}-aiplatform.googleapis.com"
     )
@@ -262,6 +270,8 @@ async def remediation_executor_remote(request: str) -> str:
         a2a_url = f"https://{GEMINI_LOCATION}-aiplatform.googleapis.com/v1beta1/{remediation_urn}/a2a"
     else:
         a2a_url = remediation_urn
+    # Restore global model endpoint so subsequent model inference calls use the correct location
+    vertexai.init(project=PROJECT_ID, location=GEMINI_MODEL_LOCATION)
         
     if not hasattr(RemoteA2aAgent, "_patched_by_sre_agent"):
         original_ensure_httpx_client = RemoteA2aAgent._ensure_httpx_client
@@ -333,9 +343,16 @@ async def remediation_executor_remote(request: str) -> str:
         agent=agent
     )
     
+    # Forward the operator justification (if any) as a trailer the remediator's PAM
+    # callback parses out to request a JIT grant. Kept in-band on the request text so
+    # it rides the existing A2A message path with no protocol change.
+    outbound = request
+    if justification and justification.strip():
+        outbound = f"{request}\n\n[PAM_JUSTIFICATION]: {justification.strip()}"
+
     session.events.append(ADKEvent(
         author="user",
-        content=genai_types.Content(parts=[genai_types.Part(text=request)]),
+        content=genai_types.Content(parts=[genai_types.Part(text=outbound)]),
         invocation_id=ctx.invocation_id
     ))
     
@@ -351,6 +368,288 @@ async def remediation_executor_remote(request: str) -> str:
         return "".join(response_texts)
     except Exception as e:
         return f"REMEDIATION_FAILED: Failed to execute automated scaling remediation. Error details: {str(e)}"
+
+def _build_hitl_a2ui_messages(request: str) -> list:
+    sid = "hitl-approval"
+    # A2UI v0.8 requires components to be defined via surfaceUpdate BEFORE the
+    # terminal beginRendering signal — the client buffers components and only
+    # renders when beginRendering (referencing `root`) arrives. Emitting
+    # beginRendering first leaves GE with an empty buffer and it fails to render.
+    #
+    # PHASE 0 (PAM justification spike): a TextField bound two-way to the data-model
+    # path /justification captures the operator's justification. The Approve button's
+    # action.context references that same path, so the client resolves the typed value
+    # and ships it back inside the userAction click payload. dataModelUpdate seeds the
+    # path before render so the binding exists.
+    #
+    # STATELESS DESIGN: because pending_remediation session state does NOT survive
+    # between the render turn and the click turn on a multi-instance Reasoning Engine,
+    # the Approve button also carries the full remediation `request` as a literalString
+    # in action.context. This makes the click payload self-contained — the interceptor
+    # reconstructs both the action AND the request+justification directly from the click,
+    # with no dependency on session state. The [hitl][phase0] capture log dumps the raw
+    # inbound payload so we can pin the exact context shape before finalizing the parser.
+    return [
+        {
+            "surfaceUpdate": {
+                "surfaceId": sid,
+                "components": [
+                    {"id": "root",    "component": {"Card":   {"child": "content"}}},
+                    {"id": "content", "component": {"Column": {"children": {"explicitList": ["title", "desc", "justification", "actions"]}}}},
+                    {"id": "title",   "component": {"Text":   {"text": {"literalString": "Remediation Approval Required"}}}},
+                    {"id": "desc",    "component": {"Text":   {"text": {"literalString": request}}}},
+                    {"id": "justification", "component": {"TextField": {
+                        "label": {"literalString": "Justification (required for privileged access)"},
+                        "text": {"path": "/justification"},
+                        "textFieldType": "longText",
+                    }}},
+                    {"id": "actions", "component": {"Row":    {"children": {"explicitList": ["approve-btn", "reject-btn"]}}}},
+                    {"id": "approve-btn",   "component": {"Button": {"child": "approve-label", "primary": True,  "action": {"name": "approve", "context": [{"key": "justification", "value": {"path": "/justification"}}, {"key": "remediation_request", "value": {"literalString": request}}]}}}},
+                    {"id": "approve-label", "component": {"Text":   {"text": {"literalString": "Approve"}}}},
+                    {"id": "reject-btn",    "component": {"Button": {"child": "reject-label",  "primary": False, "action": {"name": "reject"}}}},
+                    {"id": "reject-label",  "component": {"Text":   {"text": {"literalString": "Reject"}}}},
+                ],
+            }
+        },
+        {"dataModelUpdate": {"surfaceId": sid, "path": "/", "contents": [{"key": "justification", "valueString": ""}]}},
+        {"beginRendering": {"surfaceId": sid, "root": "root"}},
+    ]
+
+async def remediation_executor_hitl(request: str, tool_context) -> dict:
+    """Tier 2 HITL: delegate a GKE remediation that REQUIRES operator approval before execution.
+    Use this tool for Playbooks 3–8. Surfaces an Approve/Reject A2UI widget; executes only on approval.
+
+    Args:
+        request: The SRE instruction describing the GKE remediation action to execute (e.g. "restart deployment redis-cart in namespace default").
+
+    Returns:
+        A dict containing validated_a2ui_json for GE to render the Approve/Reject widget.
+    """
+    tool_context.state["pending_remediation"] = request
+    tool_context.actions.skip_summarization = True
+    return {"validated_a2ui_json": _build_hitl_a2ui_messages(request)}
+
+async def handle_approval(response: str, tool_context) -> str:
+    """Processes the operator's approve/reject response to a pending HITL remediation.
+
+    Args:
+        response: The operator response — "approve" to execute, anything else to reject.
+                  Accepts plain text or JSON action format (e.g. {"action": {"name": "approve"}})
+                  as sent by GE button-click DataParts.
+
+    Returns:
+        The remediation result or rejection message.
+    """
+    pending = tool_context.state.get("pending_remediation")
+    if not pending:
+        return "No pending remediation found."
+    tool_context.state.pop("pending_remediation", None)
+
+    # Normalize: GE sends button clicks as DataParts containing JSON action payloads
+    normalized = response.strip().lower()
+    try:
+        import json
+        parsed = json.loads(response)
+        if isinstance(parsed, dict):
+            action = parsed.get("action", parsed)
+            normalized = (action.get("name", "") if isinstance(action, dict) else str(action)).lower()
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        pass
+
+    if normalized == "approve":
+        result = await remediation_executor_remote(pending)
+        return f"Remediation executed: {result}"
+    else:
+        return "Operator rejected the remediation. No action taken."
+
+def _find_action_name(obj):
+    """Recursively locate an A2UI action name (userAction.name / action.name) in a parsed payload."""
+    if isinstance(obj, dict):
+        for key in ("userAction", "action"):
+            sub = obj.get(key)
+            if isinstance(sub, dict) and isinstance(sub.get("name"), str):
+                return sub["name"]
+        name = obj.get("name")
+        if isinstance(name, str) and name.strip().lower() in ("approve", "reject"):
+            return name
+        for value in obj.values():
+            found = _find_action_name(value)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_action_name(value)
+            if found:
+                return found
+    return None
+
+def _find_user_action(obj):
+    """Recursively locate the A2UI userAction dict (has a string 'name', optional 'context')."""
+    if isinstance(obj, dict):
+        for key in ("userAction", "action"):
+            sub = obj.get(key)
+            if isinstance(sub, dict) and isinstance(sub.get("name"), str):
+                return sub
+        name = obj.get("name")
+        if isinstance(name, str) and name.strip().lower() in ("approve", "reject"):
+            return obj
+        for value in obj.values():
+            found = _find_user_action(value)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_user_action(value)
+            if found:
+                return found
+    return None
+
+def _extract_hitl_click(content):
+    """Extract (action, remediation_request, justification) from a GE A2UI Approve/Reject click.
+
+    STATELESS: everything needed to resolve the approval rides in the click payload, so this
+    does NOT depend on pending_remediation session state surviving between turns.
+
+    GE delivers the click as a userAction DataPart (wrapped in <a2a_datapart_json>). The
+    button's action.context — which we sent as an array of {key,value} — is resolved by the
+    client into a {key: value} MAP inside userAction.context. Empirically confirmed GE quirk:
+    a context entry whose value was a path binding (our /justification field) comes back with
+    its KEY mangled to the JS string "[object Object]" while the resolved VALUE is intact;
+    literalString-valued entries (remediation_request) keep their real key. We parse around
+    that, and also tolerate the original array form in case a future GE build changes.
+
+    Returns ("", "", "") on non-HITL turns.
+    """
+    import json
+    if not content or not getattr(content, "parts", None):
+        return "", "", ""
+    blobs = []
+    for part in content.parts:
+        text = getattr(part, "text", None)
+        if text:
+            blobs.append(text)
+        inline = getattr(part, "inline_data", None)
+        if inline is not None and getattr(inline, "data", None):
+            raw = inline.data
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", "ignore")
+            blobs.append(str(raw).replace("<a2a_datapart_json>", "").replace("</a2a_datapart_json>", ""))
+    for blob in blobs:
+        stripped = blob.strip().lower()
+        if stripped in ("approve", "reject"):
+            return stripped, "", ""
+        try:
+            parsed = json.loads(blob)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        ua = _find_user_action(parsed)
+        if not ua:
+            continue
+        action = str(ua.get("name", "")).strip().lower()
+        if action not in ("approve", "reject"):
+            continue
+        context = ua.get("context") or {}
+        request, justification = "", ""
+        if isinstance(context, dict):
+            request = context.get("remediation_request") or ""
+            justification = context.get("justification") or context.get("[object Object]") or ""
+            if not justification:
+                # last resort: any string context value that isn't the request
+                for k, v in context.items():
+                    if k != "remediation_request" and isinstance(v, str) and v:
+                        justification = v
+                        break
+        elif isinstance(context, list):
+            for entry in context:
+                if not isinstance(entry, dict):
+                    continue
+                k, v = entry.get("key"), entry.get("value")
+                v = v if isinstance(v, str) else ""
+                if k == "remediation_request":
+                    request = v or request
+                elif k == "justification":
+                    justification = v or justification
+        return action, str(request), str(justification)
+    return "", "", ""
+
+def _extract_hitl_action(content) -> str:
+    """Extract 'approve'/'reject' from a GE A2UI button-click message.
+
+    GE delivers the click as an A2UI userAction DataPart, which ADK's default inbound
+    converter turns into an opaque inline_data blob (wrapped in <a2a_datapart_json> tags)
+    that the LLM cannot read — the only human-visible text is a generic 'user action
+    triggered' label. This digs the real action name out of every part shape we might
+    receive (datapart blob, JSON text, or plain text).
+    """
+    import json
+    if not content or not getattr(content, "parts", None):
+        return ""
+    blobs = []
+    for part in content.parts:
+        text = getattr(part, "text", None)
+        if text:
+            blobs.append(text)
+        inline = getattr(part, "inline_data", None)
+        if inline is not None and getattr(inline, "data", None):
+            raw = inline.data
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", "ignore")
+            blobs.append(str(raw).replace("<a2a_datapart_json>", "").replace("</a2a_datapart_json>", ""))
+    for blob in blobs:
+        stripped = blob.strip().lower()
+        if stripped in ("approve", "reject"):
+            return stripped
+        try:
+            name = _find_action_name(json.loads(blob))
+        except (json.JSONDecodeError, TypeError):
+            name = None
+        if name:
+            return name.strip().lower()
+    return ""
+
+async def _hitl_action_interceptor(callback_context):
+    """Deterministically resolve HITL Approve/Reject button clicks before the LLM runs.
+
+    Returning Content short-circuits the agent (ADK skips the model turn), so the
+    remediation decision never depends on the LLM parsing the opaque action payload.
+    Returns None on non-HITL turns so normal investigation proceeds unchanged.
+    """
+    from google.genai import types as genai_types
+    import logging
+    logger = logging.getLogger("google_adk")
+
+    # STATELESS resolution: the Approve/Reject click carries the action, the full
+    # remediation_request, and the operator justification in its userAction.context, so
+    # we resolve entirely from the click payload and never depend on pending_remediation
+    # surviving between the render turn and the click turn (which is unreliable across
+    # multi-instance Reasoning Engine routing).
+    action, request, justification = _extract_hitl_click(callback_context.user_content)
+
+    if action not in ("approve", "reject"):
+        return None
+
+    logger.info(
+        "[hitl] resolved operator action=%r via stateless click payload (request=%r, justification_len=%d)",
+        action, request, len(justification or ""),
+    )
+
+    callback_context.state["pending_remediation"] = ""
+    if action == "reject":
+        return genai_types.Content(role="model", parts=[genai_types.Part(
+            text="🛑 Operator rejected the remediation. No action taken.")])
+
+    # approve — prefer the request from the click; fall back to session state only if an
+    # older/context-less click omitted it.
+    if not request:
+        request = callback_context.state.get("pending_remediation") or ""
+    if not request:
+        logger.warning("[hitl] approve click carried no remediation_request and no pending state was available")
+        return genai_types.Content(role="model", parts=[genai_types.Part(
+            text="⚠️ Approval received but the remediation request was missing from the click payload. Please re-run the investigation and approve again.")])
+
+    result = await remediation_executor_remote(request, justification)
+    return genai_types.Content(role="model", parts=[genai_types.Part(
+        text=f"✅ Operator approved. Remediation executed: {result}")])
 
 def get_current_utc_time() -> str:
     """Returns the current UTC date and time as an ISO 8601 string (e.g. 2026-07-18T06:56:00Z). Use this tool to get current timestamps for log and metric filtering queries."""
@@ -438,9 +737,10 @@ _rca_tools = [
     FilteringLazyToolset(lambda: get_mcp_toolset(GKE_MCP_SERVER)),
     FilteringLazyToolset(lambda: get_mcp_toolset(COMPUTE_MCP_SERVER)),
     FilteringLazyToolset(lambda: get_mcp_toolset(BQ_MCP_SERVER)),
-    FilteringLazyToolset(lambda: get_mcp_toolset(GCS_MCP_SERVER)),
     skill_toolset.SkillToolset(skills=_RCA_SKILLS),
     remediation_executor_remote,
+    remediation_executor_hitl,
+    handle_approval,
     get_current_utc_time,
     utcnow,
     list_kubernetes_resources
@@ -453,6 +753,7 @@ rca_telemetry_expert = Agent(
     ),
     instruction=_RCA_INSTRUCTION,
     tools=_rca_tools,
+    before_agent_callback=_hitl_action_interceptor,
 )
 
 # =========================================================================
@@ -491,13 +792,217 @@ incident_report_writer = Agent(
     tools=_reporting_tools,
 )
 
-from vertexai.agent_engines.templates.adk import AdkApp
-from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from vertexai.preview.reasoning_engines import A2aAgent
+from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
+from google.adk.runners import Runner
 
-# Expose the ADK wrapped Agent Engine app for Vertex AI deployment
-agent_engine = AdkApp(
-    agent=rca_telemetry_expert,
-    app_name="investigator_agent_app",
-    enable_tracing=True,
-    session_service_builder=lambda **kwargs: InMemorySessionService(),
+def _get_rca_agent_card():
+    from a2a import types as a2a_types
+    a2ui_extension = a2a_types.AgentExtension(
+        uri="https://a2ui.org/a2a-extension/a2ui/v0.8",
+        description="Provides agent driven UI using the A2UI JSON format.",
+    )
+    return a2a_types.AgentCard(
+        name="rca-telemetry-expert",
+        description="The SRE RCA Telemetry Expert agent. Performs root-cause analysis, cross-correlates observability signals, and delegates GKE remediation under HITL gating.",
+        version="1.0",
+        url="https://dummy.com",
+        capabilities=a2a_types.AgentCapabilities(
+            # EXPERIMENT (hop-1 streaming probe): advertise streaming so we can observe
+            # whether GE switches its chat orchestration from message:send to
+            # message:stream when it reads this card. If GE still calls message:send in
+            # the logs, GE ignores the capability for tool-agent calls and no amount of
+            # agent-side streaming work will surface progress.
+            streaming=True,
+            extensions=[a2ui_extension],
+        ),
+        defaultInputModes=["text"],
+        defaultOutputModes=["text"],
+        skills=[],
+        preferredTransport="HTTP+JSON",
+    )
+
+def build_rca_agent():
+    import vertexai
+    from app.config import PROJECT_ID, GEMINI_MODEL_LOCATION
+    # RE framework resets vertexai.global_config before each request;
+    # re-init here so model calls use the global endpoint.
+    vertexai.init(project=PROJECT_ID, location=GEMINI_MODEL_LOCATION)
+
+    from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+    from google.adk.sessions.in_memory_session_service import InMemorySessionService
+    from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+    from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+    from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutorConfig
+    from a2ui.basic_catalog.provider import BasicCatalog
+    from a2ui.schema.manager import A2uiSchemaManager
+    from a2ui.adk.a2a.part_converter import A2uiPartConverter
+
+    runner = Runner(
+        app_name="rca-telemetry-expert",
+        agent=rca_telemetry_expert,
+        artifact_service=InMemoryArtifactService(),
+        session_service=InMemorySessionService(),
+        memory_service=InMemoryMemoryService(),
+        credential_service=InMemoryCredentialService(),
+    )
+
+    cfg = BasicCatalog.get_config("0.8")
+    mgr = A2uiSchemaManager(version="0.8", catalogs=[cfg])
+    catalog = mgr.get_selected_catalog()
+    a2ui_converter = A2uiPartConverter(catalog, bypass_tool_check=True, version="0.8")
+
+    # STREAMING EXPERIMENT: ADK's default A2A request converter builds a RunConfig with
+    # streaming_mode=NONE, so even when GE opens an SSE `message:stream` connection the
+    # model is called non-streaming and only step-boundary events (tool calls, final
+    # answer) flow — no partial text. Wrap the converter to force StreamingMode.SSE so the
+    # model streams partial text fragments, which GE's client renders progressively
+    # ("append content[].text fragments as they arrive"). This is the only thing that can
+    # change the spinner UX, since GE ignores non-text intermediate events.
+    from google.adk.a2a.converters.request_converter import (
+        convert_a2a_request_to_agent_run_request,
+    )
+    from google.adk.agents.run_config import RunConfig, StreamingMode
+
+    def _sse_request_converter(request, part_converter):
+        run_request = convert_a2a_request_to_agent_run_request(request, part_converter)
+        if run_request.run_config is None:
+            run_request.run_config = RunConfig(streaming_mode=StreamingMode.SSE)
+        else:
+            run_request.run_config.streaming_mode = StreamingMode.SSE
+        return run_request
+
+    # NARRATION: content produced by the runner is converted to A2A *artifact*
+    # updates, which GE does not render until task completion. But GE DOES render
+    # genuine `TaskStatusUpdate` *messages* (status.message.parts) as they stream —
+    # verified in GE on 2026-09-16. This interceptor injects a status-message right
+    # before each tool-call event so GE shows human-readable progress during the
+    # ~30s investigation instead of a bare spinner.
+    #
+    # Polish over the first probe: (a) skip SSE *partial* events (StreamingMode.SSE
+    # emits incremental partial function-call events that caused doubled/combined
+    # lines like "get_current_utc_time, list_kubernetes_resources"); (b) collapse
+    # consecutive duplicate narrations (the model paginating logs fired
+    # "list_log_entries" 8× in a row); (c) humanize raw tool names into phrases.
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+    from google.adk.a2a.executor.config import ExecuteInterceptor
+    from a2a.types import (
+        TaskStatusUpdateEvent as _TSU,
+        TaskStatus as _TS,
+        TaskState as _TState,
+        Message as _Msg,
+        Role as _Role,
+        TextPart as _TextPart,
+    )
+
+    # Tools whose calls are internal plumbing / not worth narrating to the user.
+    # NOTE: the remediation delegation tool (remediation_executor_remote) is
+    # intentionally NOT skipped — we narrate it on the RCA's own stream so GE
+    # shows "🔧 Implementing remediation…" during the (otherwise silent) fix.
+    _NARRATION_SKIP = (
+        "hitl", "handle_approval", "load_skill",
+        "utc", "utcnow", "current_time",
+    )
+
+    # Human-readable phrasing for the tools the RCA actually calls. Anything not
+    # listed falls back to a snake_case → prose heuristic below.
+    _NARRATION_PHRASES = {
+        "list_skills": "Loading available skills",
+        "list_kubernetes_resources": "Inspecting Kubernetes resources",
+        "get_kubernetes_resource": "Reading Kubernetes resource details",
+        "list_log_entries": "Searching Cloud Logging",
+        "list_alerts": "Checking active alerts",
+        "list_time_series": "Querying Cloud Monitoring metrics",
+        "query_time_series": "Querying Cloud Monitoring metrics",
+        "remediation_executor_remote": "Implementing remediation",
+    }
+
+    # Tools that represent an action (not investigation) — narrated with a wrench.
+    _ACTION_TOOLS = ("remediation",)
+
+    def _humanize_tool(name):
+        phrase = _NARRATION_PHRASES.get(name)
+        if phrase:
+            return phrase
+        if name.startswith("list_"):
+            return "Listing " + name[len("list_"):].replace("_", " ")
+        if name.startswith("get_"):
+            return "Fetching " + name[len("get_"):].replace("_", " ")
+        return name.replace("_", " ").capitalize()
+
+    def _tool_names(adk_event):
+        names = []
+        try:
+            for fc in adk_event.get_function_calls():
+                if getattr(fc, "name", None):
+                    names.append(fc.name)
+        except Exception:
+            content = getattr(adk_event, "content", None)
+            for p in (getattr(content, "parts", None) or []):
+                fc = getattr(p, "function_call", None)
+                if fc and getattr(fc, "name", None):
+                    names.append(fc.name)
+        return names
+
+    # Per-task memory of the last narration emitted, so consecutive duplicates are
+    # collapsed. Keyed by task_id; capped so a long-lived process can't leak.
+    _last_narration = {}
+
+    async def _narrate_after_event(executor_context, a2a_event, adk_event):
+        # NOTE: do NOT skip `partial` events — in StreamingMode.SSE the function-call
+        # parts ride on partial events, so skipping them suppresses all narration.
+        # The noise filter + consecutive-dedup below handle the combined/duplicate
+        # lines instead.
+        tools = [t for t in _tool_names(adk_event)
+                 if not any(s in t.lower() for s in _NARRATION_SKIP)]
+        task_id = getattr(a2a_event, "task_id", None)
+        context_id = getattr(a2a_event, "context_id", None)
+        if not tools or not task_id or not context_id:
+            return a2a_event
+
+        # De-duplicate tool names within this event, preserving order.
+        seen = set()
+        unique = [t for t in tools if not (t in seen or seen.add(t))]
+        label = " · ".join(_humanize_tool(t) for t in unique[:3])
+
+        # Use a wrench for action steps (remediation), a magnifier for investigation.
+        is_action = any(any(a in t.lower() for a in _ACTION_TOOLS) for t in unique)
+        emoji = "🔧" if is_action else "🔍"
+
+        # Collapse consecutive identical narrations for the same task.
+        if _last_narration.get(task_id) == label:
+            return a2a_event
+        if len(_last_narration) > 256:
+            _last_narration.clear()
+        _last_narration[task_id] = label
+
+        narration = _TSU(
+            task_id=task_id,
+            context_id=context_id,
+            final=False,
+            status=_TS(
+                state=_TState.working,
+                timestamp=_dt.now(_tz.utc).isoformat(),
+                message=_Msg(
+                    message_id=_uuid.uuid4().hex,
+                    role=_Role.agent,
+                    parts=[_TextPart(text=f"{emoji} {label}…")],
+                ),
+            ),
+        )
+        return [narration, a2a_event]
+
+    config = A2aAgentExecutorConfig(
+        gen_ai_part_converter=a2ui_converter.convert,
+        request_converter=_sse_request_converter,
+        execute_interceptors=[ExecuteInterceptor(after_event=_narrate_after_event)],
+    )
+
+    return A2aAgentExecutor(runner=runner, config=config, force_new_version=True)
+
+# Expose the pure A2A Agent template for Vertex AI Agent Engine deployment so Agent Registry registers Agent Type: A2A
+agent_engine = A2aAgent(
+    agent_card=_get_rca_agent_card(),
+    agent_executor_builder=build_rca_agent
 )
