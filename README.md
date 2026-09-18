@@ -419,12 +419,98 @@ You can verify and demonstrate the complete **NovaSRE** self-healing architectur
 
 ### Option A: Test via Gemini Enterprise
 
-Once the `outage-simulator` and `rca-telemetry-expert` agents are registered (see §7), operators can run the full demo conversationally from the Gemini Enterprise console:
+Once the `outage-simulator` and `rca-telemetry-expert` agents are registered (see §7), operators interact conversationally from the Gemini Enterprise console using `@` mentions.
 
-1. **Trigger an Outage Simulation**: Ask the `outage-simulator` agent to run a scenario (e.g., *"Run the `gke-scale-outage` simulation — scale the `frontend` deployment to 0 replicas."*). The Chaos Engine executes the exact failure on GKE.
-2. **Trigger Autonomous Investigation & HITL Approval**: Ask the `rca-telemetry-expert` agent to investigate (e.g., *"`frontend` is returning HTTP 503 — investigate and remediate."*).
-   * **If Tier 1 (Auto-Recovery)**: The agent heals the cluster immediately and confirms recovery.
-   * **If Tier 2 (Manual HITL)**: The agent renders an **A2UI `⚡ Proposed Recovery Action`** approval widget inline. Click **`✅ Approve & Execute`**. The Remediation Worker executes the fix over A2A, confirms pod readiness, and compiles the **Markdown Post-Mortem Report** asynchronously to GCS.
+#### 🧠 Governance Tiers: Does Every Prompt Require Approval?
+
+**No, not every prompt requires approval!** NovaSRE enforces an autonomous two-tier governance model:
+
+* **⚡ Tier 1 (Auto-Recovery — Zero Approval Needed)**:
+  * **Scope**: Low-risk, stateless, or rollback-based recovery playbooks (Playbook 1: `gke-scale-recovery`, Playbook 2: `gke-crashloop-rollback`).
+  * **Behavior**: The RCA agent autonomously dispatches the healing command to `remediation-executor` over A2A and confirms recovery immediately.
+* **🛡️ Tier 2 (Gated HITL — Human Approval Required)**:
+  * **Scope**: Stateful disruption, capacity changes, network reconfigurations, DNS mutations, or novel uncategorized scenarios (Playbook 3: `gke-pod-restart`, Playbook 4: `gke-horizontal-upsize`, Playbook 5: `gke-service-routing-recovery`, Playbook 6: `gke-dns-recovery`, Playbook 7: `gke-network-firewall-recovery`, Playbook 8: `gcp-nat-port-recovery`, or general LLM reasoning fallback).
+  * **Behavior**: The RCA agent stops at the trust boundary, formulates a precise remediation plan, and renders an interactive **A2UI approval widget** inline with an **`[ ✅ Approve & Execute ]`** button. The action executes via Privileged Access Manager (PAM) JIT elevation *only after* the operator clicks Approve.
+
+---
+
+#### 🧪 Complete Conversational Test Prompt Catalog
+
+##### Scenario 1: Frontend Scale Down (Tier 1 Auto-Recovery — No Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-scale-outage simulation — scale the frontend deployment in namespace default to 0 replicas.
+   ```
+2. **Triage & Auto-Heal**:
+   ```text
+   @rca-telemetry-expert The online-boutique store is returning HTTP 503 errors. Investigate root cause and remediate.
+   ```
+   * *Expected Result*: Autonomous triage confirms 0 replicas; automatically delegates scale-up to `remediation-executor` via A2A without requesting approval; restores `frontend` to 1 replica.
+
+---
+
+##### Scenario 2: Bad Container Rollout / CrashLoopBackOff (Tier 1 Auto-Recovery — No Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-bad-rollout simulation on cartservice deployment in namespace default.
+   ```
+2. **Triage & Rollback**:
+   ```text
+   @rca-telemetry-expert Users report cart failures and errors when adding items. Triage the cluster and recover the service.
+   ```
+   * *Expected Result*: RCA detects `CrashLoopBackOff` or `ErrImagePull`, correlates with deployment ledger, and automatically rolls back `cartservice` to the last stable container image.
+
+---
+
+##### Scenario 3: Database Lockup / Pod Restart (Tier 2 Gated HITL — Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-pod-crash simulation on redis-cart in namespace default.
+   ```
+2. **Triage & Gated Approval**:
+   ```text
+   @rca-telemetry-expert The redis-cart cache is unresponsive. Investigate redis pod health and propose recovery.
+   ```
+   * *Expected Result*: RCA identifies the stale pod lock and renders an interactive **A2UI HITL Card** with an **`[ ✅ Approve & Execute ]`** button proposing `restart deployment redis-cart`. Clicking Approve triggers JIT execution.
+
+---
+
+##### Scenario 4: Payment Latency & Capacity Bottleneck (Tier 2 Gated HITL — Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-payment-latency simulation on paymentservice in namespace default.
+   ```
+2. **Triage & Gated Approval**:
+   ```text
+   @rca-telemetry-expert Checkout transactions are timing out (>2000ms latency). Triage paymentservice and scale if needed.
+   ```
+   * *Expected Result*: RCA detects high latency and prompts with an **A2UI Approval Card** proposing horizontal autoscaling to 3 replicas.
+
+---
+
+##### Scenario 5: Service Routing / Broken Selector (Tier 2 Gated HITL — Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-service-routing-break simulation on frontend service in namespace default.
+   ```
+2. **Triage & Gated Approval**:
+   ```text
+   @rca-telemetry-expert The frontend service is not routing traffic to any endpoints. Investigate the Kubernetes service selector.
+   ```
+   * *Expected Result*: RCA diagnoses the selector mismatch (`app=broken-selector`), and generates an **A2UI Approval Card** to restore the correct selector (`app=frontend`).
+
+---
+
+##### Scenario 6: CoreDNS Cluster Outage (Tier 2 Gated HITL — Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-dns-outage simulation on coredns in namespace kube-system.
+   ```
+2. **Triage & Gated Approval**:
+   ```text
+   @rca-telemetry-expert Services are failing to resolve cluster domain names. Investigate CoreDNS and restore DNS resolution.
+   ```
+   * *Expected Result*: RCA identifies CoreDNS downscale to 0 replicas, presenting an **A2UI Approval Card** to restore CoreDNS to 2 replicas.
 
 ---
 
