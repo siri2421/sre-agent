@@ -334,34 +334,43 @@ Operators interact with NovaSRE through **Gemini Enterprise**, which acts as the
 
 > [!IMPORTANT]
 > Only **two** agents need to be registered with Gemini Enterprise: the **`outage-simulator`** and the **`rca-telemetry-expert`**. The `remediation-executor` and `incident-report-writer` are never called directly by an operator — they are invoked internally by the RCA agent over the Agent-to-Agent (A2A) protocol — so they are **not** registered.
+>
+> 📖 For complete step-by-step registration instructions, console walk-throughs, and testing procedures, refer to the dedicated [**`register_agent.md`**](register_agent.md) guide.
 
-#### Step 0: Retrieve the numeric Reasoning Engine URNs
+#### Step 0: Retrieve the numeric Reasoning Engine URNs & Parameters
 
 Gemini Enterprise (like all Vertex AI Reasoning Engine invocations) requires the **numerical resource URN** (e.g., `projects/1234567890/locations/us-central1/reasoningEngines/9876543210`) rather than the string display name. Extract the live URNs generated during deployment:
 
 ```bash
-# Retrieve the project number
-export GCP_PROJECT_NUM=$(gcloud projects describe $GCP_PROJECT_ID --format="value(projectNumber)")
+# Retrieve the project number and region
+export GCP_PROJECT_ID=$(gcloud config get-value project)
+export GCP_REGION=${GOOGLE_CLOUD_LOCATION:-"us-central1"}
+export GCP_PROJECT_NUM=$(gcloud projects describe "$GCP_PROJECT_ID" --format="value(projectNumber)")
 
 # Extract active numeric URNs from the Vertex AI Reasoning Engine registry
-export SIM_URN=$(curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://${GCP_REGION}-aiplatform.googleapis.com/v1beta1/projects/${GCP_PROJECT_NUM}/locations/${GCP_REGION}/reasoningEngines" | grep -B 1 '"displayName": "outage-simulator"' | grep 'projects/' | grep -o 'projects/[^"]*')
-export RCA_URN=$(curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://${GCP_REGION}-aiplatform.googleapis.com/v1beta1/projects/${GCP_PROJECT_NUM}/locations/${GCP_REGION}/reasoningEngines" | grep -B 1 '"displayName": "rca-telemetry-expert"' | grep 'projects/' | grep -o 'projects/[^"]*')
+export SIM_URN=$(curl -4 -s -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://${GCP_REGION}-aiplatform.googleapis.com/v1beta1/projects/${GCP_PROJECT_NUM}/locations/${GCP_REGION}/reasoningEngines" | grep -B 1 '"displayName": "outage-simulator"' | grep 'projects/' | grep -o 'projects/[^"]*')
+export RCA_URN=$(curl -4 -s -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://${GCP_REGION}-aiplatform.googleapis.com/v1beta1/projects/${GCP_PROJECT_NUM}/locations/${GCP_REGION}/reasoningEngines" | grep -B 1 '"displayName": "rca-telemetry-expert"' | grep 'projects/' | grep -o 'projects/[^"]*')
+export RCA_A2A_URL="https://${GCP_REGION}-aiplatform.googleapis.com/v1beta1/${RCA_URN}/a2a"
 
-echo "Outage Simulator URN: $SIM_URN"
-echo "RCA Telemetry Expert URN: $RCA_URN"
+echo "Outage Simulator URN:         $SIM_URN"
+echo "RCA Telemetry Expert URN:     $RCA_URN"
+echo "RCA Telemetry Expert A2A URL: $RCA_A2A_URL"
 ```
+
+##### Registration Components Matrix
+
+| Component | Description | Registration Location | Value / Format |
+| :--- | :--- | :--- | :--- |
+| **Outage Simulator URN** | Chaos Engine Reasoning Engine | Gemini Enterprise → Agent Runtime | `$SIM_URN` |
+| **RCA Agent A2A URL** | Diagnostician Protocol Endpoint | Gemini Enterprise → Agent-to-Agent Card (`url`) | `$RCA_A2A_URL` |
+| **OAuth Redirect URI** | Authorized Redirect for 3LO | Google Cloud Console → Credentials | `https://vertexaisearch.cloud.google.com/oauth-redirect` |
+| **Authorization URL** | Google OAuth Auth Endpoint | Gemini Enterprise → A2A Auth Section | `https://accounts.google.com/o/oauth2/auth?access_type=offline&prompt=consent` |
+| **Token URL** | Google OAuth Token Endpoint | Gemini Enterprise → A2A Auth Section | `https://oauth2.googleapis.com/token` |
+| **Scope** | Required Cloud Platform Scope | Gemini Enterprise → A2A Auth Section | `https://www.googleapis.com/auth/cloud-platform` |
 
 #### Step 1: Create a GCP OAuth web client (for 3LO)
 
-The RCA agent is registered as a custom A2A agent that authenticates on behalf of the operator using **three-legged OAuth (3LO)**. Create an **OAuth 2.0 Web application client** in the Google Cloud console (**APIs & Services → Credentials → Create Credentials → OAuth client ID → Web application**) and record the generated **Client ID** and **Client Secret**.
-
-You will supply these credentials, along with the following endpoints, when registering the RCA agent in Step 4:
-
-| Field | Value |
-| :--- | :--- |
-| **Authorization URL** | `https://accounts.google.com/o/oauth2/auth?access_type=offline&prompt=consent` |
-| **Token URL** | `https://oauth2.googleapis.com/token` |
-| **Scope** | `https://www.googleapis.com/auth/cloud-platform` |
+The RCA agent is registered as a custom A2A agent that authenticates on behalf of the operator using **three-legged OAuth (3LO)**. Create an **OAuth 2.0 Web application client** in the Google Cloud console (**APIs & Services → Credentials → Create Credentials → OAuth client ID → Web application**), set the **Authorized redirect URIs** to `https://vertexaisearch.cloud.google.com/oauth-redirect`, and record the generated **Client ID** and **Client Secret**.
 
 #### Step 2: Register the Outage Simulator (custom agent via Agent Runtime)
 
@@ -371,9 +380,9 @@ Register the `outage-simulator` in Gemini Enterprise as a **custom agent via Age
 
 #### Step 3: Register the RCA Telemetry Expert (custom A2A agent)
 
-Register the `rca-telemetry-expert` in Gemini Enterprise as a **custom A2A agent**, providing the OAuth client credentials from Step 1 together with the Authorization URL, Token URL, and Scope from that same table.
+Register the `rca-telemetry-expert` in Gemini Enterprise as a **custom A2A agent**, providing the OAuth client credentials from Step 1 together with the Authorization URL, Token URL, and Scope from the table above.
 
-Use the agent card below, substituting `{LOCATION}`, `{PROJECT_NUMBER}`, and `{REASONING_ENGINE_ID}` with the values from your `$RCA_URN` (i.e., the `url` must resolve to the numeric URN followed by `/a2a`):
+Use the agent card below, substituting `{GCP_REGION}`, `{GCP_PROJECT_NUM}`, and `{RCA_ENGINE_ID}` with the values from your `$RCA_URN`:
 
 ```json
 {
@@ -381,8 +390,16 @@ Use the agent card below, substituting `{LOCATION}`, `{PROJECT_NUMBER}`, and `{R
   "description": "The SRE RCA Telemetry Expert agent. Performs root-cause analysis, cross-correlates observability signals, and delegates GKE remediation under HITL gating.",
   "version": "1.0",
   "protocolVersion": "0.3.0",
-  "url": "https://{LOCATION}-aiplatform.googleapis.com/v1beta1/projects/{PROJECT_NUMBER}/locations/{LOCATION}/reasoningEngines/{REASONING_ENGINE_ID}/a2a",
-  "capabilities": { "streaming": true },
+  "url": "https://{GCP_REGION}-aiplatform.googleapis.com/v1beta1/projects/{GCP_PROJECT_NUM}/locations/{GCP_REGION}/reasoningEngines/{RCA_ENGINE_ID}/a2a",
+  "capabilities": {
+    "streaming": true,
+    "extensions": [
+      {
+        "uri": "https://a2ui.org/a2a-extension/a2ui/v0.8",
+        "description": "Provides agent driven UI using the A2UI JSON format."
+      }
+    ]
+  },
   "defaultInputModes": ["text/plain"],
   "defaultOutputModes": ["text/plain"],
   "skills": [],
@@ -402,12 +419,98 @@ You can verify and demonstrate the complete **NovaSRE** self-healing architectur
 
 ### Option A: Test via Gemini Enterprise
 
-Once the `outage-simulator` and `rca-telemetry-expert` agents are registered (see §7), operators can run the full demo conversationally from the Gemini Enterprise console:
+Once the `outage-simulator` and `rca-telemetry-expert` agents are registered (see §7), operators interact conversationally from the Gemini Enterprise console using `@` mentions.
 
-1. **Trigger an Outage Simulation**: Ask the `outage-simulator` agent to run a scenario (e.g., *"Run the `gke-scale-outage` simulation — scale the `frontend` deployment to 0 replicas."*). The Chaos Engine executes the exact failure on GKE.
-2. **Trigger Autonomous Investigation & HITL Approval**: Ask the `rca-telemetry-expert` agent to investigate (e.g., *"`frontend` is returning HTTP 503 — investigate and remediate."*).
-   * **If Tier 1 (Auto-Recovery)**: The agent heals the cluster immediately and confirms recovery.
-   * **If Tier 2 (Manual HITL)**: The agent renders an **A2UI `⚡ Proposed Recovery Action`** approval widget inline. Click **`✅ Approve & Execute`**. The Remediation Worker executes the fix over A2A, confirms pod readiness, and compiles the **Markdown Post-Mortem Report** asynchronously to GCS.
+#### 🧠 Governance Tiers: Does Every Prompt Require Approval?
+
+**No, not every prompt requires approval!** NovaSRE enforces an autonomous two-tier governance model:
+
+* **⚡ Tier 1 (Auto-Recovery — Zero Approval Needed)**:
+  * **Scope**: Low-risk, stateless, or rollback-based recovery playbooks (Playbook 1: `gke-scale-recovery`, Playbook 2: `gke-crashloop-rollback`).
+  * **Behavior**: The RCA agent autonomously dispatches the healing command to `remediation-executor` over A2A and confirms recovery immediately.
+* **🛡️ Tier 2 (Gated HITL — Human Approval Required)**:
+  * **Scope**: Stateful disruption, capacity changes, network reconfigurations, DNS mutations, or novel uncategorized scenarios (Playbook 3: `gke-pod-restart`, Playbook 4: `gke-horizontal-upsize`, Playbook 5: `gke-service-routing-recovery`, Playbook 6: `gke-dns-recovery`, Playbook 7: `gke-network-firewall-recovery`, Playbook 8: `gcp-nat-port-recovery`, or general LLM reasoning fallback).
+  * **Behavior**: The RCA agent stops at the trust boundary, formulates a precise remediation plan, and renders an interactive **A2UI approval widget** inline with an **`[ ✅ Approve & Execute ]`** button. The action executes via Privileged Access Manager (PAM) JIT elevation *only after* the operator clicks Approve.
+
+---
+
+#### 🧪 Complete Conversational Test Prompt Catalog
+
+##### Scenario 1: Frontend Scale Down (Tier 1 Auto-Recovery — No Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-scale-outage simulation — scale the frontend deployment in namespace default to 0 replicas.
+   ```
+2. **Triage & Auto-Heal**:
+   ```text
+   @rca-telemetry-expert The online-boutique store is returning HTTP 503 errors. Investigate root cause and remediate.
+   ```
+   * *Expected Result*: Autonomous triage confirms 0 replicas; automatically delegates scale-up to `remediation-executor` via A2A without requesting approval; restores `frontend` to 1 replica.
+
+---
+
+##### Scenario 2: Bad Container Rollout / CrashLoopBackOff (Tier 1 Auto-Recovery — No Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-bad-rollout simulation on cartservice deployment in namespace default.
+   ```
+2. **Triage & Rollback**:
+   ```text
+   @rca-telemetry-expert Users report cart failures and errors when adding items. Triage the cluster and recover the service.
+   ```
+   * *Expected Result*: RCA detects `CrashLoopBackOff` or `ErrImagePull`, correlates with deployment ledger, and automatically rolls back `cartservice` to the last stable container image.
+
+---
+
+##### Scenario 3: Database Lockup / Pod Restart (Tier 2 Gated HITL — Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-pod-crash simulation on redis-cart in namespace default.
+   ```
+2. **Triage & Gated Approval**:
+   ```text
+   @rca-telemetry-expert The redis-cart cache is unresponsive. Investigate redis pod health and propose recovery.
+   ```
+   * *Expected Result*: RCA identifies the stale pod lock and renders an interactive **A2UI HITL Card** with an **`[ ✅ Approve & Execute ]`** button proposing `restart deployment redis-cart`. Clicking Approve triggers JIT execution.
+
+---
+
+##### Scenario 4: Payment Latency & Capacity Bottleneck (Tier 2 Gated HITL — Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-payment-latency simulation on paymentservice in namespace default.
+   ```
+2. **Triage & Gated Approval**:
+   ```text
+   @rca-telemetry-expert Checkout transactions are timing out (>2000ms latency). Triage paymentservice and scale if needed.
+   ```
+   * *Expected Result*: RCA detects high latency and prompts with an **A2UI Approval Card** proposing horizontal autoscaling to 3 replicas.
+
+---
+
+##### Scenario 5: Service Routing / Broken Selector (Tier 2 Gated HITL — Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-service-routing-break simulation on frontend service in namespace default.
+   ```
+2. **Triage & Gated Approval**:
+   ```text
+   @rca-telemetry-expert The frontend service is not routing traffic to any endpoints. Investigate the Kubernetes service selector.
+   ```
+   * *Expected Result*: RCA diagnoses the selector mismatch (`app=broken-selector`), and generates an **A2UI Approval Card** to restore the correct selector (`app=frontend`).
+
+---
+
+##### Scenario 6: CoreDNS Cluster Outage (Tier 2 Gated HITL — Approval Required)
+1. **Trigger Fault**:
+   ```text
+   @outage-simulator Run the gke-dns-outage simulation on coredns in namespace kube-system.
+   ```
+2. **Triage & Gated Approval**:
+   ```text
+   @rca-telemetry-expert Services are failing to resolve cluster domain names. Investigate CoreDNS and restore DNS resolution.
+   ```
+   * *Expected Result*: RCA identifies CoreDNS downscale to 0 replicas, presenting an **A2UI Approval Card** to restore CoreDNS to 2 replicas.
 
 ---
 

@@ -27,13 +27,15 @@ terraform {
 }
 
 provider "google" {
-  project = var.gcp_project_id
-  region  = var.gcp_region
-  zone    = var.gcp_zone
+  project         = var.gcp_project_id
+  region          = var.gcp_region
+  zone            = var.gcp_zone
+  request_timeout = "60s"
 }
 
 provider "google-beta" {
-  project = var.gcp_project_id
-  region  = var.gcp_region
-  zone    = var.gcp_zone
+  project         = var.gcp_project_id
+  region          = var.gcp_region
+  zone            = var.gcp_zone
+  request_timeout = "60s"
 }

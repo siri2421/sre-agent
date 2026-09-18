@@ -4,6 +4,7 @@
 *.key
 *.pem
 application_default_credentials.json
+sre-hitl.md
 
 # 2. Python & Build Artifacts
 .venv/
