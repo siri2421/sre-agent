@@ -22,7 +22,6 @@ locals {
     "container.googleapis.com",
     "dataform.googleapis.com",
     "iam.googleapis.com",
-    "iamconnectors.googleapis.com",
     "iap.googleapis.com",
     "logging.googleapis.com",
     "modelarmor.googleapis.com",

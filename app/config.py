@@ -73,6 +73,32 @@ except Exception as _otel_err:
 # 1. CENTRALIZED RUNTIME MONKEYPATCHES & FRAMEWORK COMPATIBILITY
 # =========================================================================
 try:
+    # Fix google-adk 2.2.0 Runner.run_async AttributeError: 'LlmAgent' object has no attribute 'mode'
+    from google.adk.agents import Agent
+    Agent.mode = None
+except Exception:
+    pass
+
+try:
+    # Enable automatic session creation for InMemorySessionService when sessions are queried
+    from google.adk.sessions.in_memory_session_service import InMemorySessionService
+    _orig_in_memory_get_session = InMemorySessionService.get_session
+
+    async def _auto_creating_get_session(self, *, app_name, user_id, session_id, config=None):
+        session = await _orig_in_memory_get_session(
+            self, app_name=app_name, user_id=user_id, session_id=session_id, config=config
+        )
+        if not session:
+            session = await self.create_session(
+                app_name=app_name, user_id=user_id, session_id=session_id
+            )
+        return session
+
+    InMemorySessionService.get_session = _auto_creating_get_session
+except Exception:
+    pass
+
+try:
     # Relax session_id validation in google-adk to allow slashes
     import google.adk.sessions.vertex_ai_session_service as service_module
     def relaxed_validate_session_id(session_id: str) -> None:

@@ -334,34 +334,43 @@ Operators interact with NovaSRE through **Gemini Enterprise**, which acts as the
 
 > [!IMPORTANT]
 > Only **two** agents need to be registered with Gemini Enterprise: the **`outage-simulator`** and the **`rca-telemetry-expert`**. The `remediation-executor` and `incident-report-writer` are never called directly by an operator — they are invoked internally by the RCA agent over the Agent-to-Agent (A2A) protocol — so they are **not** registered.
+>
+> 📖 For complete step-by-step registration instructions, console walk-throughs, and testing procedures, refer to the dedicated [**`register_agent.md`**](register_agent.md) guide.
 
-#### Step 0: Retrieve the numeric Reasoning Engine URNs
+#### Step 0: Retrieve the numeric Reasoning Engine URNs & Parameters
 
 Gemini Enterprise (like all Vertex AI Reasoning Engine invocations) requires the **numerical resource URN** (e.g., `projects/1234567890/locations/us-central1/reasoningEngines/9876543210`) rather than the string display name. Extract the live URNs generated during deployment:
 
 ```bash
-# Retrieve the project number
-export GCP_PROJECT_NUM=$(gcloud projects describe $GCP_PROJECT_ID --format="value(projectNumber)")
+# Retrieve the project number and region
+export GCP_PROJECT_ID=$(gcloud config get-value project)
+export GCP_REGION=${GOOGLE_CLOUD_LOCATION:-"us-central1"}
+export GCP_PROJECT_NUM=$(gcloud projects describe "$GCP_PROJECT_ID" --format="value(projectNumber)")
 
 # Extract active numeric URNs from the Vertex AI Reasoning Engine registry
-export SIM_URN=$(curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://${GCP_REGION}-aiplatform.googleapis.com/v1beta1/projects/${GCP_PROJECT_NUM}/locations/${GCP_REGION}/reasoningEngines" | grep -B 1 '"displayName": "outage-simulator"' | grep 'projects/' | grep -o 'projects/[^"]*')
-export RCA_URN=$(curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://${GCP_REGION}-aiplatform.googleapis.com/v1beta1/projects/${GCP_PROJECT_NUM}/locations/${GCP_REGION}/reasoningEngines" | grep -B 1 '"displayName": "rca-telemetry-expert"' | grep 'projects/' | grep -o 'projects/[^"]*')
+export SIM_URN=$(curl -4 -s -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://${GCP_REGION}-aiplatform.googleapis.com/v1beta1/projects/${GCP_PROJECT_NUM}/locations/${GCP_REGION}/reasoningEngines" | grep -B 1 '"displayName": "outage-simulator"' | grep 'projects/' | grep -o 'projects/[^"]*')
+export RCA_URN=$(curl -4 -s -H "Authorization: Bearer $(gcloud auth print-access-token)" "https://${GCP_REGION}-aiplatform.googleapis.com/v1beta1/projects/${GCP_PROJECT_NUM}/locations/${GCP_REGION}/reasoningEngines" | grep -B 1 '"displayName": "rca-telemetry-expert"' | grep 'projects/' | grep -o 'projects/[^"]*')
+export RCA_A2A_URL="https://${GCP_REGION}-aiplatform.googleapis.com/v1beta1/${RCA_URN}/a2a"
 
-echo "Outage Simulator URN: $SIM_URN"
-echo "RCA Telemetry Expert URN: $RCA_URN"
+echo "Outage Simulator URN:         $SIM_URN"
+echo "RCA Telemetry Expert URN:     $RCA_URN"
+echo "RCA Telemetry Expert A2A URL: $RCA_A2A_URL"
 ```
+
+##### Registration Components Matrix
+
+| Component | Description | Registration Location | Value / Format |
+| :--- | :--- | :--- | :--- |
+| **Outage Simulator URN** | Chaos Engine Reasoning Engine | Gemini Enterprise → Agent Runtime | `$SIM_URN` |
+| **RCA Agent A2A URL** | Diagnostician Protocol Endpoint | Gemini Enterprise → Agent-to-Agent Card (`url`) | `$RCA_A2A_URL` |
+| **OAuth Redirect URI** | Authorized Redirect for 3LO | Google Cloud Console → Credentials | `https://vertexaisearch.cloud.google.com/oauth-redirect` |
+| **Authorization URL** | Google OAuth Auth Endpoint | Gemini Enterprise → A2A Auth Section | `https://accounts.google.com/o/oauth2/auth?access_type=offline&prompt=consent` |
+| **Token URL** | Google OAuth Token Endpoint | Gemini Enterprise → A2A Auth Section | `https://oauth2.googleapis.com/token` |
+| **Scope** | Required Cloud Platform Scope | Gemini Enterprise → A2A Auth Section | `https://www.googleapis.com/auth/cloud-platform` |
 
 #### Step 1: Create a GCP OAuth web client (for 3LO)
 
-The RCA agent is registered as a custom A2A agent that authenticates on behalf of the operator using **three-legged OAuth (3LO)**. Create an **OAuth 2.0 Web application client** in the Google Cloud console (**APIs & Services → Credentials → Create Credentials → OAuth client ID → Web application**) and record the generated **Client ID** and **Client Secret**.
-
-You will supply these credentials, along with the following endpoints, when registering the RCA agent in Step 4:
-
-| Field | Value |
-| :--- | :--- |
-| **Authorization URL** | `https://accounts.google.com/o/oauth2/auth?access_type=offline&prompt=consent` |
-| **Token URL** | `https://oauth2.googleapis.com/token` |
-| **Scope** | `https://www.googleapis.com/auth/cloud-platform` |
+The RCA agent is registered as a custom A2A agent that authenticates on behalf of the operator using **three-legged OAuth (3LO)**. Create an **OAuth 2.0 Web application client** in the Google Cloud console (**APIs & Services → Credentials → Create Credentials → OAuth client ID → Web application**), set the **Authorized redirect URIs** to `https://vertexaisearch.cloud.google.com/oauth-redirect`, and record the generated **Client ID** and **Client Secret**.
 
 #### Step 2: Register the Outage Simulator (custom agent via Agent Runtime)
 
@@ -371,9 +380,9 @@ Register the `outage-simulator` in Gemini Enterprise as a **custom agent via Age
 
 #### Step 3: Register the RCA Telemetry Expert (custom A2A agent)
 
-Register the `rca-telemetry-expert` in Gemini Enterprise as a **custom A2A agent**, providing the OAuth client credentials from Step 1 together with the Authorization URL, Token URL, and Scope from that same table.
+Register the `rca-telemetry-expert` in Gemini Enterprise as a **custom A2A agent**, providing the OAuth client credentials from Step 1 together with the Authorization URL, Token URL, and Scope from the table above.
 
-Use the agent card below, substituting `{LOCATION}`, `{PROJECT_NUMBER}`, and `{REASONING_ENGINE_ID}` with the values from your `$RCA_URN` (i.e., the `url` must resolve to the numeric URN followed by `/a2a`):
+Use the agent card below, substituting `{GCP_REGION}`, `{GCP_PROJECT_NUM}`, and `{RCA_ENGINE_ID}` with the values from your `$RCA_URN`:
 
 ```json
 {
@@ -381,8 +390,16 @@ Use the agent card below, substituting `{LOCATION}`, `{PROJECT_NUMBER}`, and `{R
   "description": "The SRE RCA Telemetry Expert agent. Performs root-cause analysis, cross-correlates observability signals, and delegates GKE remediation under HITL gating.",
   "version": "1.0",
   "protocolVersion": "0.3.0",
-  "url": "https://{LOCATION}-aiplatform.googleapis.com/v1beta1/projects/{PROJECT_NUMBER}/locations/{LOCATION}/reasoningEngines/{REASONING_ENGINE_ID}/a2a",
-  "capabilities": { "streaming": true },
+  "url": "https://{GCP_REGION}-aiplatform.googleapis.com/v1beta1/projects/{GCP_PROJECT_NUM}/locations/{GCP_REGION}/reasoningEngines/{RCA_ENGINE_ID}/a2a",
+  "capabilities": {
+    "streaming": true,
+    "extensions": [
+      {
+        "uri": "https://a2ui.org/a2a-extension/a2ui/v0.8",
+        "description": "Provides agent driven UI using the A2UI JSON format."
+      }
+    ]
+  },
   "defaultInputModes": ["text/plain"],
   "defaultOutputModes": ["text/plain"],
   "skills": [],
