@@ -49,9 +49,10 @@ from app.config import (
 # =========================================================================
 class FilteringLazyToolset(BaseToolset):
     """Helper to lazily load, filter, and resolve MCP tools at runtime to prevent token bloat."""
-    def __init__(self, toolset_fn):
+    def __init__(self, toolset_fn, allowed_tools=None):
         super().__init__()
         self._toolset_fn = toolset_fn
+        self._allowed_tools = allowed_tools
         self._toolset = None
 
     async def get_tools(self, readonly_context=None):
@@ -104,12 +105,13 @@ class FilteringLazyToolset(BaseToolset):
             "list_objects",
             "get_object"
         }
+        effective_allowed = self._allowed_tools if self._allowed_tools is not None else allowed_tool_names
         
         filtered_tools = []
         for t in tools:
             name = t.name
             # Keep custom Python tools OR allowed MCP tools
-            if name in allowed_tool_names or not hasattr(t, "raw_mcp_tool"):
+            if name in effective_allowed or not hasattr(t, "raw_mcp_tool"):
                 # Surgical Schema Pruning: Remove outputSchema to prevent token bloat
                 if hasattr(t, "raw_mcp_tool") and t.raw_mcp_tool:
                     t.raw_mcp_tool.outputSchema = None
@@ -218,6 +220,51 @@ You are the SRE RCA Telemetry Expert (rca_telemetry_expert), an elite autonomous
   "severity": "CRITICAL | WARNING | INFO"
 }}
 """
+
+def trigger_incident_postmortem(request: str, result: str) -> str:
+    """Spawns incident_report_writer in a detached background thread to compile a styled HTML post-mortem
+    report and archive it to Cloud Storage via write_text, returning the deterministic live viewer URL immediately.
+    """
+    import asyncio, threading, uuid
+    from datetime import datetime, timezone
+    from google.adk.runners import InMemoryRunner
+    from google.genai import types
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    object_name = f"reports/post_mortem_{timestamp}.html"
+    report_url = f"https://storage.cloud.google.com/{PROJECT_ID}-telemetry/{object_name}"
+
+    def _compile_and_archive():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            runner = InMemoryRunner(agent=incident_report_writer)
+            session_id = f"bg-rep-{uuid.uuid4().hex[:8]}"
+            loop.run_until_complete(runner.session_service.create_session(
+                app_name=runner.app_name or incident_report_writer.name,
+                user_id="sre-system",
+                session_id=session_id
+            ))
+            prompt = f"""Compile a styled HTML post-mortem report and archive it to GCS.
+- Incident Request: {request}
+- Execution Outcomes: {result}
+- Target Bucket: {PROJECT_ID}-telemetry
+- Target Object: {object_name}
+Use write_text to save the report to Cloud Storage."""
+            msg = types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
+            async def _consume():
+                async for _ in runner.run_async(user_id="sre-system", session_id=session_id, new_message=msg):
+                    pass
+            loop.run_until_complete(_consume())
+        except Exception as e:
+            import logging
+            logging.getLogger("google_adk").warning("[postmortem] Background generation exception: %s", e)
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=_compile_and_archive, daemon=True)
+    thread.start()
+    return report_url
 
 async def remediation_executor_remote(request: str, justification: str = "") -> str:
     """Tier 1 Auto-Recovery: delegate a GKE remediation immediately without operator approval.
@@ -365,7 +412,11 @@ async def remediation_executor_remote(request: str, justification: str = "") -> 
                 for part in event.content.parts:
                     if part.text:
                         response_texts.append(part.text)
-        return "".join(response_texts)
+        res_str = "".join(response_texts)
+        if "REMEDIATION_FAILED" not in res_str:
+            report_url = trigger_incident_postmortem(request, res_str)
+            res_str += f"\n\n📄 **Incident Post-Mortem Report**: [View Post-Mortem HTML]({report_url})"
+        return res_str
     except Exception as e:
         return f"REMEDIATION_FAILED: Failed to execute automated scaling remediation. Error details: {str(e)}"
 
@@ -766,20 +817,26 @@ You are the SRE Incident Report Writer (incident_report_writer), an autonomous a
 **Target Project:** Always operate within the project `{PROJECT_ID}`.
 
 **Your Job:**
-Given diagnostic investigation details or HITL remediation execution outcomes, compile a comprehensive, highly styled Markdown post-mortem report or investigation summary, and archive it to GCS.
+Given diagnostic investigation details or HITL remediation execution outcomes, compile a comprehensive, beautifully styled HTML incident post-mortem report and archive it to Cloud Storage using `write_text`.
 
 **Operating Principles & Reporting Skill Usage:**
 1. **Leverage Reporting Skills:** When generating reports for investigations or HITL remediations, ALWAYS load and follow your post-mortem skills:
-   - **`postmortem-generator`**: Use to construct rigorous, standardized postmortem documents with timeline reconstruction, root cause analysis, and actionable remediation items.
-   - **`postmortem-documentation`**: Use for premium GitHub-style markdown formatting and visual structure.
-   - **`postmortem-aggregator`**: Use when synthesizing diagnostic findings from across multiple OneMCP tools, logs, metrics, or previous events.
-2. **Premium Markdown Structure:** Build clear reports with incident metadata blocks (`> [!IMPORTANT]`), clean comparison tables, and structured JSON SRE fact blocks at the conclusion.
-3. **Archive Documentation:** Use your GCS tools to save the compiled report to Cloud Storage under a unique, timestamped path.
-4. **Output Format:** Return the complete compiled Markdown report in your final output along with confirmation of archival.
+   - **`postmortem-generator`**: Construct rigorous, standardized postmortem documents with timeline reconstruction, root cause analysis, actionable remediation items, and structured SRE facts.
+   - **`postmortem-documentation`**: Follow standards for incident sections, verification outcomes, and documentation structure.
+2. **HTML Structure & Styling:** Format the post-mortem report as a standalone, styled HTML document (with inline CSS, clean modern typography, incident severity badge, root cause breakdown, telemetry timeline table, recovery verification, and structured SRE JSON fact block).
+3. **Archive Documentation:** Use your Cloud Storage OneMCP tool `write_text` with parameters:
+   - `bucketName`: `{PROJECT_ID}-telemetry`
+   - `objectName`: the report path specified in the prompt (e.g. `reports/post_mortem_<timestamp>.html`)
+   - `textContent`: the complete HTML report content
+   - `contentType`: `text/html`
+4. **Output Format:** Return a confirmation summary containing the target GCS path and authenticated view link (`https://storage.cloud.google.com/{PROJECT_ID}-telemetry/<objectName>`).
 """
 
 _reporting_tools = [
-    FilteringLazyToolset(lambda: get_mcp_toolset(GCS_MCP_SERVER)),
+    FilteringLazyToolset(
+        lambda: get_mcp_toolset(GCS_MCP_SERVER),
+        allowed_tools={"write_text", "read_text", "read_object", "list_objects", "list_buckets"}
+    ),
     skill_toolset.SkillToolset(skills=_REPORTING_SKILLS)
 ]
 

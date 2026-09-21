@@ -445,7 +445,7 @@ Once the `outage-simulator` and `rca-telemetry-expert` agents are registered (se
    ```text
    @rca-telemetry-expert The online-boutique store is returning HTTP 503 errors. Investigate root cause and remediate.
    ```
-   * *Expected Result*: Autonomous triage confirms 0 replicas; automatically delegates scale-up to `remediation-executor` via A2A without requesting approval; restores `frontend` to 1 replica.
+   * *Expected Result*: Autonomous triage confirms 0 replicas; automatically delegates scale-up to `remediation-executor` via A2A without requesting approval; restores `frontend` to 1 replica; and automatically returns a direct link to the styled HTML post-mortem report archived to Cloud Storage.
 
 ---
 

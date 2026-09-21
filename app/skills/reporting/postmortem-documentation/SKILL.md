@@ -14,7 +14,7 @@ You are executing **mutating infrastructure actions** and **archiving post-incid
 | `delete_k8s_pod` | **Primary Pod Restart.** Deletes a GKE pod by name and namespace. GKE will automatically spin up a fresh replacement. |
 | `rollback_deployment` | Roll back a GKE deployment to its previous stable revision if a bad container image was rolled out. |
 | `list_k8s_pods` | Query GKE pod states to verify that replacement pods have successfully reached `Running` and `Ready` states. |
-| `write_gcs_file` | Save the final Markdown post-mortem report to a secure Cloud Storage bucket. |
+| `write_text` | Save the final Markdown or HTML post-mortem report to a Cloud Storage bucket (`bucketName`, `objectName`, `textContent`, `contentType`). |
 
 ## Hard rules for Remediation
 
