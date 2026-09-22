@@ -199,14 +199,18 @@ You are the SRE RCA Telemetry Expert (rca_telemetry_expert), an elite autonomous
    * **Always prefer bundled local skills.** Do NOT attempt to load playbooks from external sources or GCS. All available playbooks are already loaded via your skill toolset.
    * Present the plan to the human operator and **explicitly ask for approval** (*"I have formulated this remediation plan: [PLAN]. Do you approve? (Please reply with 'APPROVE' to execute)"*). Do NOT execute until approved.
 
-5. **Step 5: Structured Output**:
-   Proceed directly to Step 6 once remediation is complete, approved, or confirmed not required.
+5. **Step 5: Post-Mortem Report Generation & Cloud Archival (Markdown & HTML)**:
+   Once remediation is complete, approved, or confirmed:
+   * Invoke reporting skills (`load_skill(skill_name="postmortem-generator")` and `load_skill(skill_name="postmortem-documentation")`).
+   * Draft a comprehensive, publication-ready Markdown post-mortem report containing incident metadata, diagnostic telemetry timeline, root cause analysis, remediation actions executed, and follow-up recommendations.
+   * Call the tool `upload_postmortem_report(report_markdown=<markdown_content>, report_title=<title>)`. This tool will automatically compile both Markdown (`.md`) and styled HTML (`.html`) reports and upload them to Google Cloud Storage (GCS).
+   * Include the returned GCS URIs for both the Markdown and HTML post-mortem reports in your final resolution output.
 
 6. **Progressive Executive Narrative & Structured Output**:
    When reporting your investigation and auto-recovery (or when asking for human approval), you MUST structure your response into 3 clear, professional sections so the SRE operator has complete visibility:
    * **🕵️‍♂️ Diagnostic Findings & Root Cause:** Summarize exact telemetry metrics, network logs, or K8s deployment status observed. Explain precisely why the failure occurred based on domain specialist findings.
    * **⚡ Autonomous A2A Delegation (`remediation-executor`):** State explicitly if you are calling `remediation-executor` over secure A2A to execute an automated recovery command, or proposing a Tier 2 HITL action. Include the exact action being performed.
-   * **✅ Final Resolution Brief & JSON Facts:** Provide a concluding summary confirming what was recovered and paste the final status block. Do not output raw unformatted JSON without context. End your brief with this exact JSON schema inside your summary:
+   * **✅ Final Resolution Brief & JSON Facts:** Provide a concluding summary confirming what was recovered, list the GCS URIs for the archived Markdown & HTML post-mortem reports, and paste the final status block. Do not output raw unformatted JSON without context. End your brief with this exact JSON schema inside your summary:
 {{
   "alert": "original alert string",
   "root_cause": "granular explanation of why the failure occurred",
@@ -729,6 +733,177 @@ def list_kubernetes_resources(resource_type: str = "pods", namespace: str = "def
     except Exception as e:
         return f"Execution failed across kubernetes inspection: {str(e)}"
 
+def upload_postmortem_report(report_markdown: str, report_title: str = "SRE Incident Post-Mortem Report") -> str:
+    """Compiles and archives an SRE incident post-mortem report in both Markdown (.md) and styled HTML (.html) formats to Google Cloud Storage (GCS).
+
+    Args:
+        report_markdown: The complete Markdown content of the post-mortem report.
+        report_title: Title for the post-mortem report (used in HTML document header).
+
+    Returns:
+        Confirmation message with GCS URIs for both the Markdown and HTML files.
+    """
+    import os
+    from datetime import datetime, timezone
+    import markdown
+    from google.cloud import storage
+    from app.config import PROJECT_ID
+
+    bucket_name = os.environ.get("REPORTS_BUCKET") or os.environ.get("STAGING_BUCKET", f"{PROJECT_ID}-telemetry")
+    if bucket_name.startswith("gs://"):
+        bucket_name = bucket_name[5:]
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    base_name = f"post_mortem_{timestamp}"
+
+    # Convert Markdown to HTML
+    try:
+        html_body = markdown.markdown(
+            report_markdown,
+            extensions=["tables", "fenced_code", "codehilite", "nl2br", "toc"]
+        )
+    except Exception:
+        html_body = markdown.markdown(report_markdown)
+
+    # Wrap in executive styling HTML template
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{report_title}</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #1f2937;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+            background-color: #f9fafb;
+        }}
+        header {{
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            color: #ffffff;
+            padding: 2rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }}
+        header h1 {{
+            margin: 0;
+            font-size: 1.8rem;
+            border-bottom: none;
+            color: #ffffff;
+        }}
+        header p {{
+            margin: 0.5rem 0 0 0;
+            color: #94a3b8;
+            font-size: 0.95rem;
+        }}
+        h1, h2, h3, h4 {{
+            color: #111827;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 0.3em;
+            margin-top: 1.8em;
+        }}
+        code {{
+            background-color: #f3f4f6;
+            padding: 0.2em 0.4em;
+            border-radius: 4px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.9em;
+            color: #0f172a;
+        }}
+        pre {{
+            background-color: #1e293b;
+            color: #f8fafc;
+            padding: 1.25rem;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 0.9em;
+        }}
+        pre code {{
+            background-color: transparent;
+            color: inherit;
+            padding: 0;
+        }}
+        blockquote {{
+            border-left: 4px solid #3b82f6;
+            background-color: #eff6ff;
+            margin: 1.5rem 0;
+            padding: 1rem 1.25rem;
+            color: #1e40af;
+            border-radius: 0 8px 8px 0;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }}
+        th, td {{
+            border: 1px solid #e5e7eb;
+            padding: 10px 14px;
+            text-align: left;
+        }}
+        th {{
+            background-color: #f3f4f6;
+            font-weight: 600;
+            color: #374151;
+        }}
+        tr:nth-child(even) {{
+            background-color: #f9fafb;
+        }}
+        .footer {{
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid #e5e7eb;
+            font-size: 0.85rem;
+            color: #6b7280;
+            text-align: center;
+        }}
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🛡️ {report_title}</h1>
+        <p>NovaSRE Autonomous Post-Mortem | Generated: {timestamp} UTC</p>
+    </header>
+    <main>
+        {html_body}
+    </main>
+    <div class="footer">
+        Generated automatically by NovaSRE RCA Telemetry Expert.
+    </div>
+</body>
+</html>"""
+
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+
+        md_blob_path = f"reports/{base_name}.md"
+        md_blob = bucket.blob(md_blob_path)
+        md_blob.upload_from_string(report_markdown, content_type="text/markdown")
+
+        html_blob_path = f"reports/{base_name}.html"
+        html_blob = bucket.blob(html_blob_path)
+        html_blob.upload_from_string(html_content, content_type="text/html")
+
+        md_gcs_uri = f"gs://{bucket_name}/{md_blob_path}"
+        html_gcs_uri = f"gs://{bucket_name}/{html_blob_path}"
+
+        return (
+            f"✅ POST-MORTEM REPORTS COMPILED & ARCHIVED TO GCS:\n"
+            f"  • Markdown Report: {md_gcs_uri}\n"
+            f"  • HTML Report: {html_gcs_uri}\n"
+        )
+    except Exception as e:
+        return f"❌ Failed to archive post-mortem report to GCS: {str(e)}"
+
 _rca_tools = [
     FilteringLazyToolset(lambda: get_mcp_toolset(LOGGING_MCP_SERVER)),
     FilteringLazyToolset(lambda: get_mcp_toolset(MONITORING_MCP_SERVER)),
@@ -737,7 +912,9 @@ _rca_tools = [
     FilteringLazyToolset(lambda: get_mcp_toolset(GKE_MCP_SERVER)),
     FilteringLazyToolset(lambda: get_mcp_toolset(COMPUTE_MCP_SERVER)),
     FilteringLazyToolset(lambda: get_mcp_toolset(BQ_MCP_SERVER)),
-    skill_toolset.SkillToolset(skills=_RCA_SKILLS),
+    FilteringLazyToolset(lambda: get_mcp_toolset(GCS_MCP_SERVER)),
+    skill_toolset.SkillToolset(skills=_RCA_SKILLS + _REPORTING_SKILLS),
+    upload_postmortem_report,
     remediation_executor_remote,
     remediation_executor_hitl,
     handle_approval,
@@ -916,10 +1093,11 @@ def build_rca_agent():
         "list_time_series": "Querying Cloud Monitoring metrics",
         "query_time_series": "Querying Cloud Monitoring metrics",
         "remediation_executor_remote": "Implementing remediation",
+        "upload_postmortem_report": "Archiving post-mortem reports (Markdown & HTML) to GCS",
     }
 
     # Tools that represent an action (not investigation) — narrated with a wrench.
-    _ACTION_TOOLS = ("remediation",)
+    _ACTION_TOOLS = ("remediation", "postmortem", "upload_postmortem")
 
     def _humanize_tool(name):
         phrase = _NARRATION_PHRASES.get(name)
