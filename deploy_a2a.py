@@ -136,6 +136,11 @@ def grant_iam_roles(sa_email: str = None, effective_identity: str = None):
         if member not in members:
             members.append(member)
         
+    # Include Discovery Engine service agent for Gemini Enterprise / Agent Builder integration
+    discovery_sa = f"serviceAccount:service-{PROJECT_NUMBER}@gcp-sa-discoveryengine.iam.gserviceaccount.com"
+    if discovery_sa not in members:
+        members.append(discovery_sa)
+
     for role in roles:
         binding = next((b for b in policy.bindings if b.role == role), None)
         if binding:
@@ -240,7 +245,8 @@ def deploy_agent(display_name: str, module_name: str, entrypoint_object: str, en
             "requests>=2.31.0",
             "fastapi>=0.110.0",
             "uvicorn>=0.28.0",
-            "mcp==1.27.2"
+            "mcp==1.27.2",
+            "markdown>=3.5.0"
         ],
         extra_packages=["./app"],
         service_account=DEFAULT_SERVICE_ACCOUNT,
